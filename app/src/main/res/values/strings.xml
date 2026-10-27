@@ -1,0 +1,47 @@
+<resources>
+    <string name="app_name">Loan Finance Manager</string>
+
+    <!-- Navigation -->
+    <string name="nav_dashboard">Dashboard</string>
+    <string name="nav_customers">Search</string>
+    <string name="nav_schedules">Schedules</string>
+    <string name="nav_reports">Reports</string>
+    <string name="nav_more">Manage</string>
+
+    <!-- Auth & Setup -->
+    <string name="setup_owner_title">Initialize Organization</string>
+    <string name="setup_owner_subtitle">Set up your organization, Head Office branch, and primary Owner profile in Cloud Firestore.</string>
+    <string name="login_title">Secure Staff Sign In</string>
+    <string name="login_subtitle">Authenticate with Google to access your Owner, Branch Manager, or Collection Agent workspace.</string>
+    <string name="label_org_name">Organization / Finance Company Name</string>
+    <string name="label_full_name">Full Name</string>
+    <string name="label_mobile_number">Mobile Number (10 digits)</string>
+    <string name="label_email">Authorized Google Email</string>
+    <string name="label_branch_name">Head Office / Branch Name</string>
+    <string name="label_branch_city">Branch City</string>
+    <string name="action_create_owner">Initialize Organization &amp; Owner</string>
+    <string name="action_sign_in_google">Continue with Google</string>
+    <string name="action_sign_out">Sign Out</string>
+    <string name="access_not_provisioned_title">Employee Access Not Provisioned</string>
+    <string name="account_deactivated_title">Employee Account Deactivated</string>
+
+    <!-- Sync & Storage Banners -->
+    <string name="sync_status_server_confirmed">Cloud Firestore Confirmed</string>
+    <string name="sync_status_local_pending">Saved Locally • Pending Cloud Sync</string>
+    <string name="sync_status_sync_failed">Saved Locally • Retry Queued</string>
+    <string name="sync_mode_cloud_notice">Cloud Firestore Connected • Offline collections queued safely in local SQLite</string>
+
+    <!-- Common Actions & Labels -->
+    <string name="action_register_customer">Register Customer</string>
+    <string name="action_new_loan">New Loan</string>
+    <string name="action_collect_payment">Collect Payment</string>
+    <string name="action_sync_queue">Sync Queue</string>
+    <string name="action_employees">Employees &amp; Roles</string>
+    <string name="action_teams">Branches &amp; Teams</string>
+    <string name="action_audit_logs">Audit Logs</string>
+    <string name="action_upload_document">Upload KYC Document</string>
+    <string name="action_save">Save Record</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_back">Back</string>
+    <string name="search_placeholder">Search Customer ID, Name, Mobile, or Loan ID…</string>
+</resources>

@@ -1,0 +1,6 @@
+{
+  "name": "Loan Finance Manager",
+  "description": "Role-based loan finance management app with EMI/EDI scheduling, offline payment collection sync, and branch reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

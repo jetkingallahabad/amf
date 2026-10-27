@@ -1,0 +1,566 @@
+{
+  "entities": {
+    "OrgConfig": {
+      "title": "OrgConfig",
+      "description": "Singleton organization bootstrap metadata binding the root Owner UID and Head Office branch.",
+      "type": "object",
+      "properties": {
+        "orgName": { "type": "string", "description": "Organization display name." },
+        "ownerUid": { "type": "string", "description": "Firebase Auth UID of the founding Owner." },
+        "headOfficeBranchId": { "type": "string", "description": "Document ID of the Head Office branch." },
+        "headOfficeBranchName": { "type": "string", "description": "Name of the Head Office branch." },
+        "initialized": { "type": "boolean", "description": "True once organization bootstrap completes." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()." }
+      },
+      "required": ["orgName", "ownerUid", "headOfficeBranchId", "headOfficeBranchName", "initialized", "createdAt", "updatedAt"]
+    },
+    "EmployeeInvite": {
+      "title": "EmployeeInvite",
+      "description": "Owner-provisioned employee role and permission invitation claimed upon Google Sign-In. Never stores passwords.",
+      "type": "object",
+      "properties": {
+        "employeeCode": { "type": "string", "description": "Unique employee code (e.g. EMP-0002)." },
+        "orgOwnerUid": { "type": "string", "description": "Owner UID for organization query scoping." },
+        "fullName": { "type": "string", "description": "Employee full name." },
+        "mobile": { "type": "string", "description": "10-digit Indian mobile number." },
+        "invitedEmail": { "type": "string", "format": "email", "description": "Lowercase Google account email authorized to claim this profile." },
+        "invitedUid": { "type": "string", "description": "Optional explicit Firebase UID if pre-bound; empty string otherwise." },
+        "role": { "type": "string", "enum": ["OWNER", "BRANCH_MANAGER", "COLLECTION_AGENT"] },
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string" },
+        "teamId": { "type": "string" },
+        "teamName": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["PENDING", "CLAIMED", "REVOKED"] },
+        "claimedByUid": { "type": "string" },
+        "canRegisterCustomer": { "type": "boolean" },
+        "canCreateLoan": { "type": "boolean" },
+        "canApproveLoan": { "type": "boolean" },
+        "canCollectPayment": { "type": "boolean" },
+        "canManageAdvance": { "type": "boolean" },
+        "canRequestPreClosure": { "type": "boolean" },
+        "canApprovePreClosure": { "type": "boolean" },
+        "canUploadDocuments": { "type": "boolean" },
+        "canManageTeams": { "type": "boolean" },
+        "canViewReports": { "type": "boolean" },
+        "canViewAuditLogs": { "type": "boolean" },
+        "createdByUid": { "type": "string" },
+        "createdDateDdMmYyyy": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "employeeCode", "orgOwnerUid", "fullName", "mobile", "invitedEmail", "invitedUid",
+        "role", "branchId", "branchName", "teamId", "teamName", "isActive", "status", "claimedByUid",
+        "canRegisterCustomer", "canCreateLoan", "canApproveLoan", "canCollectPayment", "canManageAdvance",
+        "canRequestPreClosure", "canApprovePreClosure", "canUploadDocuments", "canManageTeams",
+        "canViewReports", "canViewAuditLogs", "createdByUid", "createdDateDdMmYyyy", "createdAtMillis",
+        "createdAt", "updatedAt"
+      ]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "Authenticated employee record keyed by Firebase Auth UID. Contains zero password fields.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID matching document ID." },
+        "orgOwnerUid": { "type": "string" },
+        "employeeCode": { "type": "string" },
+        "fullName": { "type": "string" },
+        "mobile": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["OWNER", "BRANCH_MANAGER", "COLLECTION_AGENT"] },
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string" },
+        "branchManagerUids": { "type": "array", "description": "Bounded list of Branch Manager UIDs for branch staff queries." },
+        "teamId": { "type": "string" },
+        "teamName": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "canRegisterCustomer": { "type": "boolean" },
+        "canCreateLoan": { "type": "boolean" },
+        "canApproveLoan": { "type": "boolean" },
+        "canCollectPayment": { "type": "boolean" },
+        "canManageAdvance": { "type": "boolean" },
+        "canRequestPreClosure": { "type": "boolean" },
+        "canApprovePreClosure": { "type": "boolean" },
+        "canUploadDocuments": { "type": "boolean" },
+        "canManageTeams": { "type": "boolean" },
+        "canViewReports": { "type": "boolean" },
+        "canViewAuditLogs": { "type": "boolean" },
+        "createdByUid": { "type": "string" },
+        "createdDateDdMmYyyy": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId", "orgOwnerUid", "employeeCode", "fullName", "mobile", "email", "role",
+        "branchId", "branchName", "branchManagerUids", "teamId", "teamName", "isActive",
+        "canRegisterCustomer", "canCreateLoan", "canApproveLoan", "canCollectPayment", "canManageAdvance",
+        "canRequestPreClosure", "canApprovePreClosure", "canUploadDocuments", "canManageTeams",
+        "canViewReports", "canViewAuditLogs", "createdByUid", "createdDateDdMmYyyy", "createdAtMillis",
+        "createdAt", "updatedAt"
+      ]
+    },
+    "Branch": {
+      "title": "Branch",
+      "description": "Financial branch office record.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchCode": { "type": "string" },
+        "name": { "type": "string" },
+        "city": { "type": "string" },
+        "address": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "memberUids": { "type": "array" },
+        "createdByUid": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgOwnerUid", "branchCode", "name", "city", "address", "managerUids", "memberUids", "createdByUid", "createdAtMillis", "createdAt", "updatedAt"]
+    },
+    "Team": {
+      "title": "Team",
+      "description": "Field collection beat team within a branch.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "teamCode": { "type": "string" },
+        "name": { "type": "string" },
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "memberUids": { "type": "array" },
+        "managerEmployeeId": { "type": "string" },
+        "managerName": { "type": "string" },
+        "areaBeat": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgOwnerUid", "teamCode", "name", "branchId", "branchName", "branchManagerUids", "memberUids", "managerEmployeeId", "managerName", "areaBeat", "createdByUid", "createdAtMillis", "createdAt", "updatedAt"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Registered borrower profile with role-isolated PII.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "assignedAgentUid": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "customerCode": { "type": "string" },
+        "fullName": { "type": "string" },
+        "guardianName": { "type": "string" },
+        "mobile": { "type": "string" },
+        "alternateMobile": { "type": "string" },
+        "address": { "type": "string" },
+        "city": { "type": "string" },
+        "kycDocumentType": { "type": "string" },
+        "kycDocumentNumber": { "type": "string" },
+        "occupation": { "type": "string" },
+        "monthlyIncomePaise": { "type": "integer" },
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string" },
+        "teamId": { "type": "string" },
+        "assignedAgentName": { "type": "string" },
+        "createdDateDdMmYyyy": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orgOwnerUid", "branchManagerUids", "assignedAgentUid", "createdByUid",
+        "customerCode", "fullName", "guardianName", "mobile", "alternateMobile",
+        "address", "city", "kycDocumentType", "kycDocumentNumber", "occupation",
+        "monthlyIncomePaise", "branchId", "branchName", "teamId", "assignedAgentName",
+        "createdDateDdMmYyyy", "createdAtMillis", "createdAt", "updatedAt"
+      ]
+    },
+    "CustomerDocument": {
+      "title": "CustomerDocument",
+      "description": "KYC document verification metadata and SHA-256 checksum.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "assignedAgentUid": { "type": "string" },
+        "uploadedByUid": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerCode": { "type": "string" },
+        "branchId": { "type": "string" },
+        "documentType": { "type": "string", "enum": ["AADHAAR_CARD", "PAN_CARD", "VOTER_ID", "DRIVING_LICENCE", "SHOP_ESTABLISHMENT", "ADDRESS_PROOF", "PASSPORT_PHOTO", "INCOME_PROOF", "LOAN_AGREEMENT"] },
+        "documentNumber": { "type": "string" },
+        "fileName": { "type": "string" },
+        "localFilePath": { "type": "string" },
+        "mimeType": { "type": "string" },
+        "fileSizeBytes": { "type": "integer" },
+        "sha256Checksum": { "type": "string" },
+        "uploadedByName": { "type": "string" },
+        "uploadedDateDdMmYyyy": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orgOwnerUid", "branchManagerUids", "assignedAgentUid", "uploadedByUid",
+        "customerId", "customerCode", "branchId", "documentType", "documentNumber",
+        "fileName", "localFilePath", "mimeType", "fileSizeBytes", "sha256Checksum",
+        "uploadedByName", "uploadedDateDdMmYyyy", "createdAtMillis", "createdAt", "updatedAt"
+      ]
+    },
+    "Loan": {
+      "title": "Loan",
+      "description": "Loan account ledger supporting application, approval, rejection, disbursement, Daily EDI / Weekly EMI schedules, and permanent historical closure records.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "assignedAgentUid": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "approvedByUid": { "type": "string" },
+        "approvedDateDdMmYyyy": { "type": "string" },
+        "approvalRemarks": { "type": "string" },
+        "rejectedByUid": { "type": "string" },
+        "rejectionReason": { "type": "string" },
+        "disbursedByUid": { "type": "string" },
+        "disbursementMode": { "type": "string", "enum": ["CASH", "UPI", "BANK_TRANSFER", "CHEQUE"] },
+        "disbursementReference": { "type": "string" },
+        "netDisbursedPaise": { "type": "integer" },
+        "closedDateDdMmYyyy": { "type": "string" },
+        "loanCode": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerCode": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerMobile": { "type": "string" },
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string" },
+        "teamId": { "type": "string" },
+        "assignedAgentName": { "type": "string" },
+        "productType": { "type": "string", "enum": ["DAILY_BUSINESS_EDI", "WEEKLY_GROUP_EMI", "MICRO_ENTERPRISE", "EMERGENCY_BRIDGE"] },
+        "principalPaise": { "type": "integer" },
+        "annualInterestRateBps": { "type": "integer" },
+        "processingFeePaise": { "type": "integer" },
+        "totalInterestPaise": { "type": "integer" },
+        "totalPayablePaise": { "type": "integer" },
+        "installmentAmountPaise": { "type": "integer" },
+        "repaymentFrequency": { "type": "string", "enum": ["DAILY", "WEEKLY"] },
+        "totalInstallments": { "type": "integer" },
+        "paidAmountPaise": { "type": "integer" },
+        "advanceBalancePaise": { "type": "integer" },
+        "outstandingPaise": { "type": "integer" },
+        "status": { "type": "string", "enum": ["PENDING_APPROVAL", "APPROVED", "ACTIVE", "PRE_CLOSURE_REQUESTED", "COMPLETED", "PRE_CLOSED", "REJECTED"] },
+        "applicationDateDdMmYyyy": { "type": "string" },
+        "disbursementDateDdMmYyyy": { "type": "string" },
+        "firstDueDateDdMmYyyy": { "type": "string" },
+        "maturityDateDdMmYyyy": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orgOwnerUid", "branchManagerUids", "assignedAgentUid", "createdByUid", "approvedByUid",
+        "loanCode", "customerId", "customerCode", "customerName", "customerMobile",
+        "branchId", "branchName", "teamId", "assignedAgentName", "productType",
+        "principalPaise", "annualInterestRateBps", "processingFeePaise", "totalInterestPaise",
+        "totalPayablePaise", "installmentAmountPaise", "repaymentFrequency", "totalInstallments",
+        "paidAmountPaise", "advanceBalancePaise", "outstandingPaise", "status",
+        "applicationDateDdMmYyyy", "disbursementDateDdMmYyyy", "firstDueDateDdMmYyyy",
+        "maturityDateDdMmYyyy", "createdAtMillis", "createdAt", "updatedAt"
+      ]
+    },
+    "InstallmentSchedule": {
+      "title": "InstallmentSchedule",
+      "description": "Individual Daily EDI or Weekly EMI installment line item.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "assignedAgentUid": { "type": "string" },
+        "loanId": { "type": "string" },
+        "loanCode": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerCode": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerMobile": { "type": "string" },
+        "branchId": { "type": "string" },
+        "installmentNumber": { "type": "integer" },
+        "dueDateDdMmYyyy": { "type": "string" },
+        "dueDateEpochMillis": { "type": "integer" },
+        "frequency": { "type": "string", "enum": ["DAILY", "WEEKLY"] },
+        "scheduledAmountPaise": { "type": "integer" },
+        "paidAmountPaise": { "type": "integer" },
+        "status": { "type": "string", "enum": ["UPCOMING", "PARTIAL", "PAID", "WAIVED_PRECLOSURE"] },
+        "paidDateDdMmYyyy": { "type": "string" },
+        "lastPaymentId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orgOwnerUid", "branchManagerUids", "assignedAgentUid", "loanId", "loanCode",
+        "customerId", "customerCode", "customerName", "customerMobile", "branchId",
+        "installmentNumber", "dueDateDdMmYyyy", "dueDateEpochMillis", "frequency",
+        "scheduledAmountPaise", "paidAmountPaise", "status", "paidDateDdMmYyyy",
+        "lastPaymentId", "createdAt", "updatedAt"
+      ]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Permanent server-confirmed payment receipt in Cloud Firestore. Never deleted; reversals and corrections append audit metadata while preserving original amounts.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "assignedAgentUid": { "type": "string" },
+        "collectedByUid": { "type": "string" },
+        "transactionId": { "type": "string", "description": "Globally unique payment transaction ID (e.g. TXN-20261026-8F4A9C12)." },
+        "receiptNumber": { "type": "string", "description": "Official receipt number (e.g. RCPT-0001-8F4A)." },
+        "idempotencyKey": { "type": "string", "description": "Client submission idempotency key preventing duplicate transactions." },
+        "loanId": { "type": "string" },
+        "loanCode": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerCode": { "type": "string" },
+        "customerName": { "type": "string" },
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string" },
+        "collectedByName": { "type": "string" },
+        "amountPaise": { "type": "integer" },
+        "allocatedToInstallmentsPaise": { "type": "integer" },
+        "creditedToAdvancePaise": { "type": "integer" },
+        "allocationsSummary": { "type": "string", "description": "Itemized installment allocation summary for receipt generation." },
+        "paymentMode": { "type": "string", "enum": ["CASH", "UPI", "BANK_TRANSFER", "CHEQUE", "ADVANCE_ADJUSTMENT"] },
+        "paymentType": { "type": "string", "enum": ["REGULAR_INSTALLMENT", "ADVANCE_COLLECTION", "PRE_CLOSURE_SETTLEMENT"] },
+        "referenceNumber": { "type": "string" },
+        "remarks": { "type": "string" },
+        "collectionDateDdMmYyyy": { "type": "string" },
+        "collectedAtMillis": { "type": "integer" },
+        "serverConfirmationId": { "type": "string" },
+        "recordStatus": { "type": "string", "enum": ["ACTIVE", "REVERSED", "CORRECTED"] },
+        "reversedByUid": { "type": "string" },
+        "reversedByName": { "type": "string" },
+        "reversedDateDdMmYyyy": { "type": "string" },
+        "reversalReason": { "type": "string" },
+        "adjustmentId": { "type": "string" },
+        "replacementPaymentId": { "type": "string" },
+        "correctsPaymentId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()." }
+      },
+      "required": [
+        "orgOwnerUid", "branchManagerUids", "assignedAgentUid", "collectedByUid",
+        "transactionId", "receiptNumber", "idempotencyKey",
+        "loanId", "loanCode", "customerId", "customerCode", "customerName",
+        "branchId", "branchName", "collectedByName", "amountPaise",
+        "allocatedToInstallmentsPaise", "creditedToAdvancePaise", "allocationsSummary",
+        "paymentMode", "paymentType", "referenceNumber", "remarks",
+        "collectionDateDdMmYyyy", "collectedAtMillis", "serverConfirmationId",
+        "recordStatus", "reversedByUid", "reversedByName", "reversedDateDdMmYyyy",
+        "reversalReason", "adjustmentId", "replacementPaymentId", "correctsPaymentId",
+        "createdAt", "updatedAt"
+      ]
+    },
+    "PaymentAdjustment": {
+      "title": "PaymentAdjustment",
+      "description": "Immutable payment reversal and correction history entry linking original and replacement transactions.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "assignedAgentUid": { "type": "string" },
+        "performedByUid": { "type": "string" },
+        "performedByName": { "type": "string" },
+        "adjustmentCode": { "type": "string" },
+        "adjustmentType": { "type": "string", "enum": ["REVERSAL", "CORRECTION"] },
+        "loanId": { "type": "string" },
+        "loanCode": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerCode": { "type": "string" },
+        "customerName": { "type": "string" },
+        "branchId": { "type": "string" },
+        "originalPaymentId": { "type": "string" },
+        "originalTransactionId": { "type": "string" },
+        "originalReceiptNumber": { "type": "string" },
+        "originalAmountPaise": { "type": "integer" },
+        "replacementPaymentId": { "type": "string" },
+        "replacementTransactionId": { "type": "string" },
+        "replacementReceiptNumber": { "type": "string" },
+        "replacementAmountPaise": { "type": "integer" },
+        "reason": { "type": "string" },
+        "performedDateDdMmYyyy": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()." }
+      },
+      "required": [
+        "orgOwnerUid", "branchManagerUids", "assignedAgentUid",
+        "performedByUid", "performedByName", "adjustmentCode", "adjustmentType",
+        "loanId", "loanCode", "customerId", "customerCode", "customerName", "branchId",
+        "originalPaymentId", "originalTransactionId", "originalReceiptNumber", "originalAmountPaise",
+        "replacementPaymentId", "replacementTransactionId", "replacementReceiptNumber", "replacementAmountPaise",
+        "reason", "performedDateDdMmYyyy", "createdAtMillis", "createdAt", "updatedAt"
+      ]
+    },
+    "AdvanceTransaction": {
+      "title": "AdvanceTransaction",
+      "description": "Append-only advance deposit, installment adjustment, and payment reversal debit ledger.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "assignedAgentUid": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "loanId": { "type": "string" },
+        "loanCode": { "type": "string" },
+        "customerId": { "type": "string" },
+        "branchId": { "type": "string" },
+        "entryType": { "type": "string", "enum": ["CREDIT_ADVANCE", "CREDIT_OVERPAYMENT", "APPLIED_INSTALLMENTS", "REVERSAL_DEBIT"] },
+        "amountPaise": { "type": "integer" },
+        "balanceAfterPaise": { "type": "integer" },
+        "relatedPaymentId": { "type": "string" },
+        "note": { "type": "string" },
+        "dateDdMmYyyy": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orgOwnerUid", "branchManagerUids", "assignedAgentUid", "createdByUid",
+        "loanId", "loanCode", "customerId", "branchId", "entryType",
+        "amountPaise", "balanceAfterPaise", "relatedPaymentId", "note",
+        "dateDdMmYyyy", "createdByName", "createdAtMillis", "createdAt", "updatedAt"
+      ]
+    },
+    "PreClosureRequest": {
+      "title": "PreClosureRequest",
+      "description": "Loan pre-closure quote, review, and settlement record.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "assignedAgentUid": { "type": "string" },
+        "requestedByUid": { "type": "string" },
+        "reviewedByUid": { "type": "string" },
+        "requestCode": { "type": "string" },
+        "loanId": { "type": "string" },
+        "loanCode": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerCode": { "type": "string" },
+        "customerName": { "type": "string" },
+        "branchId": { "type": "string" },
+        "outstandingBeforePaise": { "type": "integer" },
+        "proposedRebatePaise": { "type": "integer" },
+        "preClosureChargePaise": { "type": "integer" },
+        "netSettlementPaise": { "type": "integer" },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED_SETTLED", "REJECTED"] },
+        "reason": { "type": "string" },
+        "requestedByName": { "type": "string" },
+        "requestedDateDdMmYyyy": { "type": "string" },
+        "reviewedByName": { "type": "string" },
+        "reviewedDateDdMmYyyy": { "type": "string" },
+        "reviewRemarks": { "type": "string" },
+        "settlementPaymentId": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orgOwnerUid", "branchManagerUids", "assignedAgentUid", "requestedByUid", "reviewedByUid",
+        "requestCode", "loanId", "loanCode", "customerId", "customerCode", "customerName",
+        "branchId", "outstandingBeforePaise", "proposedRebatePaise", "preClosureChargePaise",
+        "netSettlementPaise", "status", "reason", "requestedByName", "requestedDateDdMmYyyy",
+        "reviewedByName", "reviewedDateDdMmYyyy", "reviewRemarks", "settlementPaymentId",
+        "createdAtMillis", "createdAt", "updatedAt"
+      ]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable chronological financial and governance audit entry.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "branchManagerUids": { "type": "array" },
+        "actorUid": { "type": "string" },
+        "actorName": { "type": "string" },
+        "actorRole": { "type": "string", "enum": ["OWNER", "BRANCH_MANAGER", "COLLECTION_AGENT"] },
+        "branchId": { "type": "string" },
+        "category": { "type": "string", "enum": ["AUTH", "EMPLOYEE", "TEAM", "CUSTOMER", "LOAN", "PAYMENT", "ADVANCE", "PRECLOSURE", "SYNC"] },
+        "action": { "type": "string" },
+        "targetType": { "type": "string" },
+        "targetId": { "type": "string" },
+        "summary": { "type": "string" },
+        "timestampDdMmYyyyHhMm": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orgOwnerUid", "branchManagerUids", "actorUid", "actorName", "actorRole",
+        "branchId", "category", "action", "targetType", "targetId", "summary",
+        "timestampDdMmYyyyHhMm", "createdAtMillis", "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/org_config/{configId}": {
+      "schema": "OrgConfig",
+      "description": "Singleton organization bootstrap document at /org_config/main."
+    },
+    "/employee_invites/{inviteCode}": {
+      "schema": "EmployeeInvite",
+      "description": "Owner-created employee invitations claimed upon Google Sign-In."
+    },
+    "/employees/{employeeUid}": {
+      "schema": "Employee",
+      "description": "Active employee records keyed by Firebase Auth UID."
+    },
+    "/branches/{branchId}": {
+      "schema": "Branch",
+      "description": "Organization branches."
+    },
+    "/teams/{teamId}": {
+      "schema": "Team",
+      "description": "Field collection teams and beats."
+    },
+    "/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Customer profiles scoped by Owner, Branch Manager, and Collection Agent."
+    },
+    "/customer_documents/{docId}": {
+      "schema": "CustomerDocument",
+      "description": "Customer KYC document metadata and checksums."
+    },
+    "/loans/{loanId}": {
+      "schema": "Loan",
+      "description": "Loan accounts with Daily EDI and Weekly EMI repayment terms."
+    },
+    "/installment_schedules/{scheduleId}": {
+      "schema": "InstallmentSchedule",
+      "description": "Scheduled Daily EDI and Weekly EMI installments."
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Permanent server-confirmed payment collection receipts."
+    },
+    "/payment_adjustments/{adjustmentId}": {
+      "schema": "PaymentAdjustment",
+      "description": "Append-only payment reversal and correction audit ledger."
+    },
+    "/advance_transactions/{txId}": {
+      "schema": "AdvanceTransaction",
+      "description": "Advance credit, installment adjustment, and reversal debit ledger."
+    },
+    "/preclosure_requests/{requestId}": {
+      "schema": "PreClosureRequest",
+      "description": "Pre-closure requests and settlement approvals."
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Immutable security and financial audit trail."
+    }
+  }
+}

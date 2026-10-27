@@ -1,0 +1,1396 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 0. Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Core Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isBoundedString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isBoundedUidList(arr, maxItems) {
+      return arr is list && arr.size() <= maxItems && (arr.size() == 0 || (arr[0] is string && arr[0].size() <= 128));
+    }
+
+    function isValidServerTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    // --- Trusted Employee Role & Permission Lookups (Zero Client Claim Trust) ---
+    function callerEmpPath() {
+      return /databases/$(database)/documents/employees/$(request.auth.uid);
+    }
+
+    function isActiveEmployee() {
+      return isSignedIn() &&
+             exists(callerEmpPath()) &&
+             get(callerEmpPath()).data.isActive == true;
+    }
+
+    function callerEmp() {
+      return get(callerEmpPath()).data;
+    }
+
+    function isActiveOwner() {
+      return isActiveEmployee() && callerEmp().role == 'OWNER';
+    }
+
+    function canReadScopedRecord(orgOwnerUid, branchId, assignedAgentUid) {
+      let emp = callerEmp();
+      return isSignedIn() &&
+             exists(callerEmpPath()) &&
+             emp.isActive == true &&
+             emp.orgOwnerUid == orgOwnerUid && (
+               emp.role == 'OWNER' ||
+               (emp.role == 'BRANCH_MANAGER' && emp.branchId == branchId) ||
+               (emp.role == 'COLLECTION_AGENT' && assignedAgentUid == request.auth.uid)
+             );
+    }
+
+    function canActInBranch(orgOwnerUid, branchId) {
+      let emp = callerEmp();
+      return isSignedIn() &&
+             exists(callerEmpPath()) &&
+             emp.isActive == true &&
+             emp.orgOwnerUid == orgOwnerUid && (
+               emp.role == 'OWNER' ||
+               emp.branchId == branchId
+             );
+    }
+
+    function canActOnLoanScope(orgOwnerUid, branchId, assignedAgentUid) {
+      let emp = callerEmp();
+      return isSignedIn() &&
+             exists(callerEmpPath()) &&
+             emp.isActive == true &&
+             emp.orgOwnerUid == orgOwnerUid && (
+               emp.role == 'OWNER' ||
+               (emp.role == 'BRANCH_MANAGER' && emp.branchId == branchId) ||
+               (emp.role == 'COLLECTION_AGENT' && emp.branchId == branchId && assignedAgentUid == request.auth.uid)
+             );
+    }
+
+    function isInviteTarget(data) {
+      return (data.invitedUid != '' && request.auth.uid == data.invitedUid) ||
+             (data.invitedUid == '' &&
+              request.auth.token.email_verified == true &&
+              request.auth.token.email is string &&
+              request.auth.token.email.size() <= 160 &&
+              request.auth.token.email == data.invitedEmail);
+    }
+
+    // --- Validation Blueprints (Anti-Update-Gap & Zero Password Enforcement) ---
+
+    function isValidOrgConfig(data) {
+      return data.keys().hasAll(['orgName', 'ownerUid', 'headOfficeBranchId', 'headOfficeBranchName', 'initialized', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['orgName', 'ownerUid', 'headOfficeBranchId', 'headOfficeBranchName', 'initialized', 'createdAt', 'updatedAt']) &&
+             isBoundedString(data.orgName, 2, 120) &&
+             isValidId(data.ownerUid) &&
+             isValidId(data.headOfficeBranchId) &&
+             isBoundedString(data.headOfficeBranchName, 2, 120) &&
+             data.initialized is bool &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidPermissionFlags(data) {
+      return data.canRegisterCustomer is bool &&
+             data.canCreateLoan is bool &&
+             data.canApproveLoan is bool &&
+             data.canCollectPayment is bool &&
+             data.canManageAdvance is bool &&
+             data.canRequestPreClosure is bool &&
+             data.canApprovePreClosure is bool &&
+             data.canUploadDocuments is bool &&
+             data.canManageTeams is bool &&
+             data.canViewReports is bool &&
+             data.canViewAuditLogs is bool;
+    }
+
+    function isValidEmployeeInvite(data) {
+      return data.keys().hasAll([
+               'employeeCode', 'orgOwnerUid', 'fullName', 'mobile', 'invitedEmail', 'invitedUid',
+               'role', 'branchId', 'branchName', 'teamId', 'teamName', 'isActive', 'status', 'claimedByUid',
+               'canRegisterCustomer', 'canCreateLoan', 'canApproveLoan', 'canCollectPayment', 'canManageAdvance',
+               'canRequestPreClosure', 'canApprovePreClosure', 'canUploadDocuments', 'canManageTeams',
+               'canViewReports', 'canViewAuditLogs', 'createdByUid', 'createdDateDdMmYyyy', 'createdAtMillis',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'employeeCode', 'orgOwnerUid', 'fullName', 'mobile', 'invitedEmail', 'invitedUid',
+               'role', 'branchId', 'branchName', 'branchManagerUids', 'teamId', 'teamName', 'isActive', 'status', 'claimedByUid',
+               'canRegisterCustomer', 'canCreateLoan', 'canApproveLoan', 'canCollectPayment', 'canManageAdvance',
+               'canRequestPreClosure', 'canApprovePreClosure', 'canUploadDocuments', 'canManageTeams',
+               'canViewReports', 'canViewAuditLogs', 'createdByUid', 'createdDateDdMmYyyy', 'createdAtMillis',
+               'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.employeeCode) &&
+             isValidId(data.orgOwnerUid) &&
+             isBoundedString(data.fullName, 3, 100) &&
+             isBoundedString(data.mobile, 10, 15) &&
+             isBoundedString(data.invitedEmail, 3, 160) &&
+             isBoundedString(data.invitedUid, 0, 128) &&
+             data.role in ['OWNER', 'BRANCH_MANAGER', 'COLLECTION_AGENT'] &&
+             isValidId(data.branchId) &&
+             isBoundedString(data.branchName, 2, 120) &&
+             (!('branchManagerUids' in data) || isBoundedUidList(data.branchManagerUids, 20)) &&
+             isBoundedString(data.teamId, 0, 128) &&
+             isBoundedString(data.teamName, 0, 120) &&
+             data.isActive is bool &&
+             data.status in ['PENDING', 'CLAIMED', 'REVOKED'] &&
+             isBoundedString(data.claimedByUid, 0, 128) &&
+             isValidPermissionFlags(data) &&
+             isValidId(data.createdByUid) &&
+             isBoundedString(data.createdDateDdMmYyyy, 10, 10) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll([
+               'userId', 'orgOwnerUid', 'employeeCode', 'fullName', 'mobile', 'email', 'role',
+               'branchId', 'branchName', 'branchManagerUids', 'teamId', 'teamName', 'isActive',
+               'canRegisterCustomer', 'canCreateLoan', 'canApproveLoan', 'canCollectPayment', 'canManageAdvance',
+               'canRequestPreClosure', 'canApprovePreClosure', 'canUploadDocuments', 'canManageTeams',
+               'canViewReports', 'canViewAuditLogs', 'createdByUid', 'createdDateDdMmYyyy', 'createdAtMillis',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'userId', 'orgOwnerUid', 'employeeCode', 'fullName', 'mobile', 'email', 'role',
+               'branchId', 'branchName', 'branchManagerUids', 'teamId', 'teamName', 'isActive',
+               'canRegisterCustomer', 'canCreateLoan', 'canApproveLoan', 'canCollectPayment', 'canManageAdvance',
+               'canRequestPreClosure', 'canApprovePreClosure', 'canUploadDocuments', 'canManageTeams',
+               'canViewReports', 'canViewAuditLogs', 'createdByUid', 'createdDateDdMmYyyy', 'createdAtMillis',
+               'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.userId) &&
+             isValidId(data.orgOwnerUid) &&
+             isValidId(data.employeeCode) &&
+             isBoundedString(data.fullName, 3, 100) &&
+             isBoundedString(data.mobile, 10, 15) &&
+             isBoundedString(data.email, 0, 160) &&
+             data.role in ['OWNER', 'BRANCH_MANAGER', 'COLLECTION_AGENT'] &&
+             isValidId(data.branchId) &&
+             isBoundedString(data.branchName, 2, 120) &&
+             isBoundedUidList(data.branchManagerUids, 20) &&
+             isBoundedString(data.teamId, 0, 128) &&
+             isBoundedString(data.teamName, 0, 120) &&
+             data.isActive is bool &&
+             isValidPermissionFlags(data) &&
+             isValidId(data.createdByUid) &&
+             isBoundedString(data.createdDateDdMmYyyy, 10, 10) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function matchesClaimedInvite(empData) {
+      let invitePath = /databases/$(database)/documents/employee_invites/$(empData.employeeCode);
+      let invite = get(invitePath).data;
+      let afterInvite = getAfter(invitePath).data;
+      return exists(invitePath) &&
+             invite.status == 'PENDING' &&
+             invite.isActive == true &&
+             isInviteTarget(invite) &&
+             afterInvite.status == 'CLAIMED' &&
+             afterInvite.claimedByUid == request.auth.uid &&
+             empData.orgOwnerUid == invite.orgOwnerUid &&
+             empData.role == invite.role &&
+             empData.branchId == invite.branchId &&
+             empData.branchName == invite.branchName &&
+             empData.isActive == invite.isActive &&
+             empData.canRegisterCustomer == invite.canRegisterCustomer &&
+             empData.canCreateLoan == invite.canCreateLoan &&
+             empData.canApproveLoan == invite.canApproveLoan &&
+             empData.canCollectPayment == invite.canCollectPayment &&
+             empData.canManageAdvance == invite.canManageAdvance &&
+             empData.canRequestPreClosure == invite.canRequestPreClosure &&
+             empData.canApprovePreClosure == invite.canApprovePreClosure &&
+             empData.canUploadDocuments == invite.canUploadDocuments &&
+             empData.canManageTeams == invite.canManageTeams &&
+             empData.canViewReports == invite.canViewReports &&
+             empData.canViewAuditLogs == invite.canViewAuditLogs;
+    }
+
+    function isValidBranch(data) {
+      return data.keys().hasAll(['orgOwnerUid', 'branchCode', 'name', 'city', 'address', 'managerUids', 'memberUids', 'createdByUid', 'createdAtMillis', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['orgOwnerUid', 'branchCode', 'name', 'city', 'address', 'managerUids', 'memberUids', 'createdByUid', 'createdAtMillis', 'createdAt', 'updatedAt']) &&
+             isValidId(data.orgOwnerUid) &&
+             isValidId(data.branchCode) &&
+             isBoundedString(data.name, 2, 120) &&
+             isBoundedString(data.city, 2, 100) &&
+             isBoundedString(data.address, 2, 300) &&
+             isBoundedUidList(data.managerUids, 20) &&
+             isBoundedUidList(data.memberUids, 50) &&
+             isValidId(data.createdByUid) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidTeam(data) {
+      return data.keys().hasAll(['orgOwnerUid', 'teamCode', 'name', 'branchId', 'branchName', 'branchManagerUids', 'memberUids', 'managerEmployeeId', 'managerName', 'areaBeat', 'createdByUid', 'createdAtMillis', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['orgOwnerUid', 'teamCode', 'name', 'branchId', 'branchName', 'branchManagerUids', 'memberUids', 'managerEmployeeId', 'managerName', 'areaBeat', 'createdByUid', 'createdAtMillis', 'createdAt', 'updatedAt']) &&
+             isValidId(data.orgOwnerUid) &&
+             isValidId(data.teamCode) &&
+             isBoundedString(data.name, 2, 120) &&
+             isValidId(data.branchId) &&
+             isBoundedString(data.branchName, 2, 120) &&
+             isBoundedUidList(data.branchManagerUids, 20) &&
+             isBoundedUidList(data.memberUids, 50) &&
+             isBoundedString(data.managerEmployeeId, 0, 128) &&
+             isBoundedString(data.managerName, 1, 100) &&
+             isBoundedString(data.areaBeat, 2, 200) &&
+             isValidId(data.createdByUid) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll([
+               'orgOwnerUid', 'branchManagerUids', 'assignedAgentUid', 'createdByUid',
+               'customerCode', 'fullName', 'guardianName', 'mobile', 'alternateMobile',
+               'address', 'city', 'kycDocumentType', 'kycDocumentNumber', 'occupation',
+               'monthlyIncomePaise', 'branchId', 'branchName', 'teamId', 'assignedAgentName',
+               'createdDateDdMmYyyy', 'createdAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'orgOwnerUid', 'branchManagerUids', 'assignedAgentUid', 'createdByUid',
+               'customerCode', 'fullName', 'guardianName', 'mobile', 'alternateMobile',
+               'address', 'city', 'kycDocumentType', 'kycDocumentNumber', 'occupation',
+               'monthlyIncomePaise', 'branchId', 'branchName', 'teamId', 'assignedAgentName',
+               'createdDateDdMmYyyy', 'createdAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.orgOwnerUid) &&
+             isBoundedUidList(data.branchManagerUids, 20) &&
+             isValidId(data.assignedAgentUid) &&
+             isValidId(data.createdByUid) &&
+             isValidId(data.customerCode) &&
+             isBoundedString(data.fullName, 3, 100) &&
+             isBoundedString(data.guardianName, 0, 100) &&
+             isBoundedString(data.mobile, 10, 15) &&
+             isBoundedString(data.alternateMobile, 0, 15) &&
+             isBoundedString(data.address, 2, 300) &&
+             isBoundedString(data.city, 1, 100) &&
+             isBoundedString(data.kycDocumentType, 2, 60) &&
+             isBoundedString(data.kycDocumentNumber, 2, 60) &&
+             isBoundedString(data.occupation, 0, 100) &&
+             data.monthlyIncomePaise is int && data.monthlyIncomePaise >= 0 &&
+             isValidId(data.branchId) &&
+             isBoundedString(data.branchName, 2, 120) &&
+             isBoundedString(data.teamId, 0, 128) &&
+             isBoundedString(data.assignedAgentName, 1, 100) &&
+             isBoundedString(data.createdDateDdMmYyyy, 10, 10) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidCustomerDocument(data) {
+      return data.keys().hasAll([
+               'orgOwnerUid', 'branchManagerUids', 'assignedAgentUid', 'uploadedByUid',
+               'customerId', 'customerCode', 'branchId', 'documentType', 'documentNumber',
+               'fileName', 'localFilePath', 'mimeType', 'fileSizeBytes', 'sha256Checksum',
+               'uploadedByName', 'uploadedDateDdMmYyyy', 'createdAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'orgOwnerUid', 'branchManagerUids', 'assignedAgentUid', 'uploadedByUid',
+               'customerId', 'customerCode', 'branchId', 'documentType', 'documentNumber',
+               'fileName', 'localFilePath', 'mimeType', 'fileSizeBytes', 'sha256Checksum',
+               'uploadedByName', 'uploadedDateDdMmYyyy', 'createdAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.orgOwnerUid) &&
+             isBoundedUidList(data.branchManagerUids, 20) &&
+             isValidId(data.assignedAgentUid) &&
+             isValidId(data.uploadedByUid) &&
+             isValidId(data.customerId) &&
+             isValidId(data.customerCode) &&
+             isValidId(data.branchId) &&
+             data.documentType in ['AADHAAR_CARD', 'PAN_CARD', 'VOTER_ID', 'DRIVING_LICENCE', 'SHOP_ESTABLISHMENT', 'ADDRESS_PROOF', 'PASSPORT_PHOTO', 'INCOME_PROOF', 'LOAN_AGREEMENT'] &&
+             isBoundedString(data.documentNumber, 0, 64) &&
+             isBoundedString(data.fileName, 1, 200) &&
+             isBoundedString(data.localFilePath, 1, 400) &&
+             isBoundedString(data.mimeType, 1, 100) &&
+             data.fileSizeBytes is int && data.fileSizeBytes >= 0 &&
+             isBoundedString(data.sha256Checksum, 16, 128) &&
+             isBoundedString(data.uploadedByName, 1, 100) &&
+             isBoundedString(data.uploadedDateDdMmYyyy, 10, 10) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isMaxStr(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function isReqStr(val, maxLen) {
+      return val is string && val != '' && val.size() <= maxLen;
+    }
+
+    function isDateStr(val) {
+      return val is string && val.size() == 10;
+    }
+
+    function isNonNegInt(val) {
+      return val is int && val >= 0;
+    }
+
+    function isValidLoanMutable(data) {
+      return data.size() == 43 &&
+             data.branchManagerUids is list && data.branchManagerUids.size() <= 20 &&
+             isReqStr(data.assignedAgentUid, 128) &&
+             isReqStr(data.assignedAgentName, 100) &&
+             isMaxStr(data.teamId, 128) &&
+             isMaxStr(data.approvedByUid, 128) &&
+             isMaxStr(data.approvedDateDdMmYyyy, 10) &&
+             isMaxStr(data.approvalRemarks, 300) &&
+             isMaxStr(data.rejectedByUid, 128) &&
+             isMaxStr(data.rejectionReason, 300) &&
+             isMaxStr(data.disbursedByUid, 128) &&
+             data.disbursementMode in ['CASH', 'UPI', 'BANK_TRANSFER', 'CHEQUE'] &&
+             isMaxStr(data.disbursementReference, 100) &&
+             data.netDisbursedPaise is int && data.netDisbursedPaise >= 0 && data.netDisbursedPaise <= data.principalPaise &&
+             isMaxStr(data.closedDateDdMmYyyy, 10) &&
+             isNonNegInt(data.paidAmountPaise) &&
+             isNonNegInt(data.advanceBalancePaise) &&
+             isNonNegInt(data.outstandingPaise) &&
+             data.status in ['PENDING_APPROVAL', 'APPROVED', 'ACTIVE', 'PRE_CLOSURE_REQUESTED', 'COMPLETED', 'PRE_CLOSED', 'REJECTED'] &&
+             isDateStr(data.disbursementDateDdMmYyyy) &&
+             isDateStr(data.firstDueDateDdMmYyyy) &&
+             isDateStr(data.maturityDateDdMmYyyy) &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidLoan(data) {
+      return isValidLoanMutable(data) &&
+             isReqStr(data.orgOwnerUid, 128) &&
+             isReqStr(data.createdByUid, 128) &&
+             isReqStr(data.loanCode, 64) &&
+             isReqStr(data.customerId, 128) &&
+             isReqStr(data.customerCode, 64) &&
+             isReqStr(data.customerName, 100) &&
+             isBoundedString(data.customerMobile, 10, 15) &&
+             isReqStr(data.branchId, 128) &&
+             isReqStr(data.branchName, 120) &&
+             data.productType in ['DAILY_BUSINESS_EDI', 'WEEKLY_GROUP_EMI', 'MICRO_ENTERPRISE', 'EMERGENCY_BRIDGE'] &&
+             data.principalPaise is int && data.principalPaise > 0 &&
+             isNonNegInt(data.annualInterestRateBps) &&
+             isNonNegInt(data.processingFeePaise) &&
+             isNonNegInt(data.totalInterestPaise) &&
+             data.totalPayablePaise is int && data.totalPayablePaise >= data.principalPaise &&
+             data.installmentAmountPaise is int && data.installmentAmountPaise > 0 &&
+             data.repaymentFrequency in ['DAILY', 'WEEKLY'] &&
+             data.totalInstallments is int && data.totalInstallments >= 1 && data.totalInstallments <= 1000 &&
+             isDateStr(data.applicationDateDdMmYyyy) &&
+             isNonNegInt(data.createdAtMillis) &&
+             data.createdAt is timestamp;
+    }
+
+    function canCreateLoanDoc(loanId) {
+      let d = request.resource.data;
+      let emp = callerEmp();
+      return isSignedIn() &&
+             isValidId(loanId) &&
+             exists(callerEmpPath()) &&
+             emp.isActive == true &&
+             emp.orgOwnerUid == d.orgOwnerUid &&
+             (emp.role == 'OWNER' || (emp.branchId == d.branchId && emp.canCreateLoan == true)) &&
+             d.createdByUid == request.auth.uid &&
+             (d.status == 'PENDING_APPROVAL' ||
+              (d.status in ['APPROVED', 'ACTIVE'] && (emp.role == 'OWNER' || emp.canApproveLoan == true))) &&
+             isValidLoan(d) &&
+             isValidServerTimestamp(d.createdAt) &&
+             exists(/databases/$(database)/documents/customers/$(d.customerId));
+    }
+
+    function isValidLoanOwnerReassign(d) {
+      return d.branchManagerUids is list && d.branchManagerUids.size() <= 20 &&
+             isReqStr(d.assignedAgentUid, 128) &&
+             isReqStr(d.assignedAgentName, 100) &&
+             isMaxStr(d.teamId, 128);
+    }
+
+    function isValidLoanDisburseFields(d) {
+      return isMaxStr(d.approvedByUid, 128) &&
+             isMaxStr(d.approvedDateDdMmYyyy, 10) &&
+             isMaxStr(d.approvalRemarks, 300) &&
+             isReqStr(d.disbursedByUid, 128) &&
+             d.disbursementMode in ['CASH', 'UPI', 'BANK_TRANSFER', 'CHEQUE'] &&
+             isMaxStr(d.disbursementReference, 100) &&
+             d.netDisbursedPaise is int && d.netDisbursedPaise >= 0 && d.netDisbursedPaise <= d.principalPaise &&
+             isDateStr(d.disbursementDateDdMmYyyy) &&
+             isDateStr(d.firstDueDateDdMmYyyy) &&
+             isDateStr(d.maturityDateDdMmYyyy);
+    }
+
+    function isValidLoanBalanceFields(d) {
+      return isNonNegInt(d.paidAmountPaise) &&
+             isNonNegInt(d.advanceBalancePaise) &&
+             isNonNegInt(d.outstandingPaise) &&
+             isMaxStr(d.closedDateDdMmYyyy, 10);
+    }
+
+    function evalLoanUpdate(loanId, d, cur, emp, changed) {
+      return isValidId(loanId) &&
+             d.size() == cur.size() &&
+             isValidServerTimestamp(d.updatedAt) &&
+             emp.isActive == true &&
+             emp.orgOwnerUid == cur.orgOwnerUid &&
+             (emp.role == 'OWNER' || emp.branchId == cur.branchId) && (
+               (emp.role == 'OWNER' &&
+                isValidLoanOwnerReassign(d) &&
+                changed.hasOnly(['assignedAgentUid', 'assignedAgentName', 'teamId', 'branchManagerUids', 'updatedAt'])) ||
+               (cur.status in ['PENDING_APPROVAL', 'APPROVED'] &&
+                (emp.role == 'OWNER' || emp.canApproveLoan == true) && (
+                  (cur.status == 'PENDING_APPROVAL' && d.status == 'APPROVED' && d.approvedByUid == request.auth.uid &&
+                   isDateStr(d.approvedDateDdMmYyyy) && isMaxStr(d.approvalRemarks, 300) &&
+                   changed.hasOnly(['status', 'approvedByUid', 'approvedDateDdMmYyyy', 'approvalRemarks', 'updatedAt'])) ||
+                  (d.status == 'REJECTED' && d.rejectedByUid == request.auth.uid &&
+                   isBoundedString(d.rejectionReason, 3, 300) && d.outstandingPaise == 0 && isMaxStr(d.closedDateDdMmYyyy, 10) &&
+                   changed.hasOnly(['status', 'rejectedByUid', 'rejectionReason', 'outstandingPaise', 'closedDateDdMmYyyy', 'updatedAt'])) ||
+                  (d.status == 'ACTIVE' && d.disbursedByUid == request.auth.uid &&
+                   isValidLoanDisburseFields(d) &&
+                   changed.hasOnly([
+                     'status', 'approvedByUid', 'approvedDateDdMmYyyy', 'approvalRemarks',
+                     'disbursedByUid', 'disbursementDateDdMmYyyy', 'disbursementMode',
+                     'disbursementReference', 'netDisbursedPaise', 'firstDueDateDdMmYyyy', 'maturityDateDdMmYyyy', 'updatedAt'
+                   ]))
+                )) ||
+               (isValidLoanBalanceFields(d) &&
+                changed.hasOnly(['paidAmountPaise', 'advanceBalancePaise', 'outstandingPaise', 'status', 'closedDateDdMmYyyy', 'updatedAt']) && (
+                 (cur.status in ['ACTIVE', 'PRE_CLOSURE_REQUESTED'] &&
+                  d.status in ['ACTIVE', 'PRE_CLOSURE_REQUESTED', 'COMPLETED', 'PRE_CLOSED'] &&
+                  (emp.role != 'COLLECTION_AGENT' || cur.assignedAgentUid == request.auth.uid) &&
+                  (emp.role == 'OWNER' || emp.canCollectPayment == true || emp.canManageAdvance == true || emp.canRequestPreClosure == true || emp.canApprovePreClosure == true)) ||
+                 (cur.status == 'COMPLETED' &&
+                  d.status in ['ACTIVE', 'COMPLETED'] &&
+                  (emp.role == 'OWNER' || (emp.role == 'BRANCH_MANAGER' && emp.canCollectPayment == true)) &&
+                  d.paidAmountPaise + d.outstandingPaise == cur.totalPayablePaise &&
+                  (d.status == 'COMPLETED' || (d.paidAmountPaise < cur.paidAmountPaise && d.closedDateDdMmYyyy == '')))
+               ))
+             );
+    }
+
+    function canUpdateLoanDoc(loanId) {
+      return isSignedIn() &&
+             exists(callerEmpPath()) &&
+             evalLoanUpdate(
+               loanId,
+               request.resource.data,
+               resource.data,
+               callerEmp(),
+               request.resource.data.diff(resource.data).affectedKeys()
+             );
+    }
+
+    function isValidInstallmentSchedule(d) {
+      return d.size() == 21 &&
+             isReqStr(d.orgOwnerUid, 128) &&
+             d.branchManagerUids is list && d.branchManagerUids.size() <= 20 &&
+             isReqStr(d.assignedAgentUid, 128) &&
+             isReqStr(d.loanId, 128) &&
+             isReqStr(d.loanCode, 64) &&
+             isReqStr(d.customerId, 128) &&
+             isReqStr(d.customerCode, 64) &&
+             isReqStr(d.customerName, 100) &&
+             isBoundedString(d.customerMobile, 10, 15) &&
+             isReqStr(d.branchId, 128) &&
+             d.installmentNumber is int && d.installmentNumber >= 1 &&
+             isDateStr(d.dueDateDdMmYyyy) &&
+             isNonNegInt(d.dueDateEpochMillis) &&
+             d.frequency in ['DAILY', 'WEEKLY'] &&
+             isNonNegInt(d.scheduledAmountPaise) &&
+             isNonNegInt(d.paidAmountPaise) &&
+             d.status in ['UPCOMING', 'PARTIAL', 'PAID', 'WAIVED_PRECLOSURE'] &&
+             isMaxStr(d.paidDateDdMmYyyy, 10) &&
+             isMaxStr(d.lastPaymentId, 128) &&
+             d.createdAt is timestamp &&
+             isValidServerTimestamp(d.updatedAt);
+    }
+
+    function isValidScheduleUpdate(d, cur) {
+      return d.size() == cur.size() &&
+             isNonNegInt(d.paidAmountPaise) &&
+             d.status in ['UPCOMING', 'PARTIAL', 'PAID', 'WAIVED_PRECLOSURE'] &&
+             isMaxStr(d.paidDateDdMmYyyy, 10) &&
+             isMaxStr(d.lastPaymentId, 128) &&
+             isValidServerTimestamp(d.updatedAt);
+    }
+
+    function canUpdateScheduleDoc(scheduleId) {
+      let d = request.resource.data;
+      let cur = resource.data;
+      let emp = callerEmp();
+      let changed = d.diff(cur).affectedKeys();
+      return isSignedIn() &&
+             isValidId(scheduleId) &&
+             isValidScheduleUpdate(d, cur) &&
+             exists(callerEmpPath()) &&
+             emp.isActive == true &&
+             emp.orgOwnerUid == cur.orgOwnerUid && (
+               (emp.role == 'OWNER' &&
+                isReqStr(d.assignedAgentUid, 128) &&
+                d.branchManagerUids is list && d.branchManagerUids.size() <= 20 &&
+                changed.hasOnly([
+                  'paidAmountPaise', 'status', 'paidDateDdMmYyyy', 'lastPaymentId', 'assignedAgentUid', 'branchManagerUids', 'updatedAt'
+                ])) ||
+               (!(cur.status in ['PAID', 'WAIVED_PRECLOSURE']) &&
+                emp.branchId == cur.branchId &&
+                (emp.role != 'COLLECTION_AGENT' || cur.assignedAgentUid == request.auth.uid) &&
+                (emp.canCollectPayment == true || emp.canManageAdvance == true || emp.canApprovePreClosure == true) &&
+                changed.hasOnly(['paidAmountPaise', 'status', 'paidDateDdMmYyyy', 'lastPaymentId', 'updatedAt'])) ||
+               (cur.status != 'WAIVED_PRECLOSURE' &&
+                emp.role == 'BRANCH_MANAGER' &&
+                emp.branchId == cur.branchId &&
+                emp.canCollectPayment == true &&
+                changed.hasOnly(['paidAmountPaise', 'status', 'paidDateDdMmYyyy', 'lastPaymentId', 'updatedAt']))
+             );
+    }
+
+    function isValidPayment(d) {
+      return d.size() == 36 &&
+             isReqStr(d.orgOwnerUid, 128) &&
+             d.branchManagerUids is list && d.branchManagerUids.size() <= 20 &&
+             isReqStr(d.assignedAgentUid, 128) &&
+             isReqStr(d.collectedByUid, 128) &&
+             isReqStr(d.transactionId, 128) &&
+             isReqStr(d.receiptNumber, 128) &&
+             isBoundedString(d.idempotencyKey, 6, 128) &&
+             isReqStr(d.loanId, 128) &&
+             isReqStr(d.loanCode, 64) &&
+             isReqStr(d.customerId, 128) &&
+             isReqStr(d.customerCode, 64) &&
+             isReqStr(d.customerName, 100) &&
+             isReqStr(d.branchId, 128) &&
+             isBoundedString(d.branchName, 2, 120) &&
+             isReqStr(d.collectedByName, 100) &&
+             isNonNegInt(d.amountPaise) &&
+             isNonNegInt(d.allocatedToInstallmentsPaise) &&
+             isNonNegInt(d.creditedToAdvancePaise) &&
+             isMaxStr(d.allocationsSummary, 1000) &&
+             d.paymentMode in ['CASH', 'UPI', 'BANK_TRANSFER', 'CHEQUE', 'ADVANCE_ADJUSTMENT'] &&
+             d.paymentType in ['REGULAR_INSTALLMENT', 'ADVANCE_COLLECTION', 'PRE_CLOSURE_SETTLEMENT'] &&
+             isMaxStr(d.referenceNumber, 100) &&
+             isMaxStr(d.remarks, 300) &&
+             isDateStr(d.collectionDateDdMmYyyy) &&
+             isNonNegInt(d.collectedAtMillis) &&
+             isBoundedString(d.serverConfirmationId, 3, 128) &&
+             d.recordStatus in ['ACTIVE', 'REVERSED', 'CORRECTED'] &&
+             isMaxStr(d.reversedByUid, 128) &&
+             isMaxStr(d.reversedByName, 100) &&
+             isMaxStr(d.reversedDateDdMmYyyy, 10) &&
+             isMaxStr(d.reversalReason, 300) &&
+             isMaxStr(d.adjustmentId, 128) &&
+             isMaxStr(d.replacementPaymentId, 128) &&
+             isMaxStr(d.correctsPaymentId, 128) &&
+             d.createdAt is timestamp &&
+             isValidServerTimestamp(d.updatedAt);
+    }
+
+    function canCreatePaymentDoc(paymentId) {
+      let d = request.resource.data;
+      let emp = callerEmp();
+      return isSignedIn() &&
+             isValidId(paymentId) &&
+             isValidPayment(d) &&
+             isValidServerTimestamp(d.createdAt) &&
+             d.collectedByUid == request.auth.uid &&
+             d.recordStatus == 'ACTIVE' &&
+             d.reversedByUid == '' &&
+             d.reversedByName == '' &&
+             d.reversedDateDdMmYyyy == '' &&
+             d.reversalReason == '' &&
+             d.adjustmentId == '' &&
+             d.replacementPaymentId == '' &&
+             exists(callerEmpPath()) &&
+             emp.isActive == true &&
+             emp.orgOwnerUid == d.orgOwnerUid &&
+             (emp.role == 'OWNER' ||
+              (emp.branchId == d.branchId &&
+               (emp.role != 'COLLECTION_AGENT' || d.assignedAgentUid == request.auth.uid) &&
+               (emp.canCollectPayment == true || emp.canManageAdvance == true || emp.canApprovePreClosure == true))) &&
+             exists(/databases/$(database)/documents/loans/$(d.loanId));
+    }
+
+    function isValidPaymentReversalFields(d) {
+      return d.recordStatus in ['REVERSED', 'CORRECTED'] &&
+             d.reversedByUid == request.auth.uid &&
+             isBoundedString(d.reversedByName, 1, 100) &&
+             isDateStr(d.reversedDateDdMmYyyy) &&
+             isBoundedString(d.reversalReason, 3, 300) &&
+             isValidId(d.adjustmentId) &&
+             isMaxStr(d.replacementPaymentId, 128) &&
+             (d.recordStatus != 'CORRECTED' || isValidId(d.replacementPaymentId));
+    }
+
+    function canUpdatePaymentDoc(paymentId) {
+      let d = request.resource.data;
+      let cur = resource.data;
+      let emp = callerEmp();
+      let changed = d.diff(cur).affectedKeys();
+      return isSignedIn() &&
+             isValidId(paymentId) &&
+             d.size() == cur.size() &&
+             isValidServerTimestamp(d.updatedAt) &&
+             exists(callerEmpPath()) &&
+             emp.isActive == true &&
+             emp.orgOwnerUid == cur.orgOwnerUid && (
+               (emp.role == 'OWNER' &&
+                d.branchManagerUids is list && d.branchManagerUids.size() <= 20 &&
+                changed.hasOnly(['branchManagerUids', 'updatedAt'])) ||
+               (cur.recordStatus == 'ACTIVE' &&
+                cur.paymentType != 'PRE_CLOSURE_SETTLEMENT' &&
+                isValidPaymentReversalFields(d) &&
+                (emp.role == 'OWNER' || (emp.role == 'BRANCH_MANAGER' && emp.branchId == cur.branchId && emp.canCollectPayment == true)) &&
+                existsAfter(/databases/$(database)/documents/payment_adjustments/$(d.adjustmentId)) &&
+                changed.hasOnly([
+                  'recordStatus', 'reversedByUid', 'reversedByName', 'reversedDateDdMmYyyy',
+                  'reversalReason', 'adjustmentId', 'replacementPaymentId', 'updatedAt'
+                ]))
+             );
+    }
+
+    function isValidPaymentAdjustment(d) {
+      return d.size() == 26 &&
+             isReqStr(d.orgOwnerUid, 128) &&
+             d.branchManagerUids is list && d.branchManagerUids.size() <= 20 &&
+             isReqStr(d.assignedAgentUid, 128) &&
+             isReqStr(d.performedByUid, 128) &&
+             isReqStr(d.performedByName, 100) &&
+             isReqStr(d.adjustmentCode, 128) &&
+             d.adjustmentType in ['REVERSAL', 'CORRECTION'] &&
+             isReqStr(d.loanId, 128) &&
+             isReqStr(d.loanCode, 64) &&
+             isReqStr(d.customerId, 128) &&
+             isReqStr(d.customerCode, 64) &&
+             isReqStr(d.customerName, 100) &&
+             isReqStr(d.branchId, 128) &&
+             isReqStr(d.originalPaymentId, 128) &&
+             isReqStr(d.originalTransactionId, 128) &&
+             isReqStr(d.originalReceiptNumber, 128) &&
+             isNonNegInt(d.originalAmountPaise) &&
+             isMaxStr(d.replacementPaymentId, 128) &&
+             isMaxStr(d.replacementTransactionId, 128) &&
+             isMaxStr(d.replacementReceiptNumber, 128) &&
+             isNonNegInt(d.replacementAmountPaise) &&
+             isBoundedString(d.reason, 3, 300) &&
+             isDateStr(d.performedDateDdMmYyyy) &&
+             isNonNegInt(d.createdAtMillis) &&
+             d.createdAt is timestamp &&
+             isValidServerTimestamp(d.updatedAt);
+    }
+
+    function canCreatePaymentAdjustmentDoc(adjustmentId) {
+      let d = request.resource.data;
+      let emp = callerEmp();
+      return isSignedIn() &&
+             isValidId(adjustmentId) &&
+             isValidPaymentAdjustment(d) &&
+             isValidServerTimestamp(d.createdAt) &&
+             d.performedByUid == request.auth.uid &&
+             exists(callerEmpPath()) &&
+             emp.isActive == true &&
+             emp.orgOwnerUid == d.orgOwnerUid &&
+             (emp.role == 'OWNER' || (emp.role == 'BRANCH_MANAGER' && emp.branchId == d.branchId && emp.canCollectPayment == true)) &&
+             exists(/databases/$(database)/documents/payments/$(d.originalPaymentId)) &&
+             exists(/databases/$(database)/documents/loans/$(d.loanId));
+    }
+
+    function isValidAdvanceTransaction(data) {
+      return data.keys().hasAll([
+               'orgOwnerUid', 'branchManagerUids', 'assignedAgentUid', 'createdByUid',
+               'loanId', 'loanCode', 'customerId', 'branchId', 'entryType',
+               'amountPaise', 'balanceAfterPaise', 'relatedPaymentId', 'note',
+               'dateDdMmYyyy', 'createdByName', 'createdAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'orgOwnerUid', 'branchManagerUids', 'assignedAgentUid', 'createdByUid',
+               'loanId', 'loanCode', 'customerId', 'branchId', 'entryType',
+               'amountPaise', 'balanceAfterPaise', 'relatedPaymentId', 'note',
+               'dateDdMmYyyy', 'createdByName', 'createdAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.orgOwnerUid) &&
+             isBoundedUidList(data.branchManagerUids, 20) &&
+             isValidId(data.assignedAgentUid) &&
+             isValidId(data.createdByUid) &&
+             isValidId(data.loanId) &&
+             isValidId(data.loanCode) &&
+             isValidId(data.customerId) &&
+             isValidId(data.branchId) &&
+             data.entryType in ['CREDIT_ADVANCE', 'CREDIT_OVERPAYMENT', 'APPLIED_INSTALLMENTS', 'REVERSAL_DEBIT'] &&
+             data.amountPaise is int && data.amountPaise > 0 &&
+             data.balanceAfterPaise is int && data.balanceAfterPaise >= 0 &&
+             isBoundedString(data.relatedPaymentId, 0, 128) &&
+             isBoundedString(data.note, 0, 300) &&
+             isBoundedString(data.dateDdMmYyyy, 10, 10) &&
+             isBoundedString(data.createdByName, 1, 100) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidPreClosureRequest(data) {
+      return data.keys().hasAll([
+               'orgOwnerUid', 'branchManagerUids', 'assignedAgentUid', 'requestedByUid', 'reviewedByUid',
+               'requestCode', 'loanId', 'loanCode', 'customerId', 'customerCode', 'customerName',
+               'branchId', 'outstandingBeforePaise', 'proposedRebatePaise', 'preClosureChargePaise',
+               'netSettlementPaise', 'status', 'reason', 'requestedByName', 'requestedDateDdMmYyyy',
+               'reviewedByName', 'reviewedDateDdMmYyyy', 'reviewRemarks', 'settlementPaymentId',
+               'createdAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'orgOwnerUid', 'branchManagerUids', 'assignedAgentUid', 'requestedByUid', 'reviewedByUid',
+               'requestCode', 'loanId', 'loanCode', 'customerId', 'customerCode', 'customerName',
+               'branchId', 'outstandingBeforePaise', 'proposedRebatePaise', 'preClosureChargePaise',
+               'netSettlementPaise', 'status', 'reason', 'requestedByName', 'requestedDateDdMmYyyy',
+               'reviewedByName', 'reviewedDateDdMmYyyy', 'reviewRemarks', 'settlementPaymentId',
+               'createdAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.orgOwnerUid) &&
+             isBoundedUidList(data.branchManagerUids, 20) &&
+             isValidId(data.assignedAgentUid) &&
+             isValidId(data.requestedByUid) &&
+             isBoundedString(data.reviewedByUid, 0, 128) &&
+             isValidId(data.requestCode) &&
+             isValidId(data.loanId) &&
+             isValidId(data.loanCode) &&
+             isValidId(data.customerId) &&
+             isValidId(data.customerCode) &&
+             isBoundedString(data.customerName, 1, 100) &&
+             isValidId(data.branchId) &&
+             data.outstandingBeforePaise is int && data.outstandingBeforePaise >= 0 &&
+             data.proposedRebatePaise is int && data.proposedRebatePaise >= 0 &&
+             data.preClosureChargePaise is int && data.preClosureChargePaise >= 0 &&
+             data.netSettlementPaise is int && data.netSettlementPaise >= 0 &&
+             data.status in ['PENDING', 'APPROVED_SETTLED', 'REJECTED'] &&
+             isBoundedString(data.reason, 1, 300) &&
+             isBoundedString(data.requestedByName, 1, 100) &&
+             isBoundedString(data.requestedDateDdMmYyyy, 10, 10) &&
+             isBoundedString(data.reviewedByName, 0, 100) &&
+             isBoundedString(data.reviewedDateDdMmYyyy, 0, 10) &&
+             isBoundedString(data.reviewRemarks, 0, 300) &&
+             isBoundedString(data.settlementPaymentId, 0, 128) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll([
+               'orgOwnerUid', 'branchManagerUids', 'actorUid', 'actorName', 'actorRole',
+               'branchId', 'category', 'action', 'targetType', 'targetId', 'summary',
+               'timestampDdMmYyyyHhMm', 'createdAtMillis', 'createdAt'
+             ]) &&
+             data.keys().hasOnly([
+               'orgOwnerUid', 'branchManagerUids', 'actorUid', 'actorName', 'actorRole',
+               'branchId', 'category', 'action', 'targetType', 'targetId', 'summary',
+               'timestampDdMmYyyyHhMm', 'createdAtMillis', 'createdAt'
+             ]) &&
+             isValidId(data.orgOwnerUid) &&
+             isBoundedUidList(data.branchManagerUids, 20) &&
+             isValidId(data.actorUid) &&
+             isBoundedString(data.actorName, 1, 100) &&
+             data.actorRole in ['OWNER', 'BRANCH_MANAGER', 'COLLECTION_AGENT'] &&
+             isValidId(data.branchId) &&
+             data.category in ['AUTH', 'EMPLOYEE', 'TEAM', 'CUSTOMER', 'LOAN', 'PAYMENT', 'ADVANCE', 'PRECLOSURE', 'SYNC'] &&
+             isBoundedString(data.action, 2, 80) &&
+             isBoundedString(data.targetType, 2, 60) &&
+             isBoundedString(data.targetId, 1, 128) &&
+             isBoundedString(data.summary, 2, 500) &&
+             isBoundedString(data.timestampDdMmYyyyHhMm, 10, 30) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             isValidServerTimestamp(data.createdAt);
+    }
+
+    // =========================================================================
+    // 1. /org_config/{configId}
+    // =========================================================================
+    match /org_config/{configId} {
+      allow get: if isSignedIn() && configId == 'main';
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       configId == 'main' &&
+                       isValidOrgConfig(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       incoming().ownerUid == request.auth.uid &&
+                       incoming().initialized == true &&
+                       existsAfter(/databases/$(database)/documents/employees/$(request.auth.uid));
+
+      allow update: if isSignedIn() &&
+                       configId == 'main' &&
+                       isValidOrgConfig(incoming()) &&
+                       existing().ownerUid == request.auth.uid &&
+                       incoming().ownerUid == existing().ownerUid &&
+                       incoming().headOfficeBranchId == existing().headOfficeBranchId &&
+                       incoming().initialized == existing().initialized &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['orgName', 'headOfficeBranchName', 'updatedAt']);
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 2. /employee_invites/{inviteCode} (STRICT OWNER-ONLY CREATION)
+    // =========================================================================
+    match /employee_invites/{inviteCode} {
+      allow get: if isSignedIn() &&
+                    isValidId(inviteCode) && (
+                      existing().orgOwnerUid == request.auth.uid ||
+                      isInviteTarget(existing())
+                    );
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     (resource.data.invitedUid != '' && resource.data.invitedUid == request.auth.uid) ||
+                     (request.auth.token.email_verified == true &&
+                      request.auth.token.email is string &&
+                      resource.data.invitedEmail == request.auth.token.email)
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(inviteCode) &&
+                       isValidEmployeeInvite(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       incoming().employeeCode == inviteCode &&
+                       incoming().createdByUid == request.auth.uid &&
+                       incoming().status == 'PENDING' &&
+                       incoming().claimedByUid == '' &&
+                       isActiveOwner() &&
+                       incoming().orgOwnerUid == callerEmp().orgOwnerUid &&
+                       exists(/databases/$(database)/documents/branches/$(incoming().branchId));
+
+      allow update: if isSignedIn() &&
+                       isValidId(inviteCode) &&
+                       isValidEmployeeInvite(incoming()) &&
+                       incoming().employeeCode == existing().employeeCode &&
+                       incoming().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().createdByUid == existing().createdByUid &&
+                       incoming().createdAt == existing().createdAt && (
+                         // Action 1: Owner updates invite details or revokes
+                         (isActiveOwner() &&
+                          callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'fullName', 'mobile', 'invitedEmail', 'invitedUid', 'role', 'branchId', 'branchName', 'branchManagerUids',
+                            'teamId', 'teamName', 'isActive', 'status', 'canRegisterCustomer', 'canCreateLoan',
+                            'canApproveLoan', 'canCollectPayment', 'canManageAdvance', 'canRequestPreClosure',
+                            'canApprovePreClosure', 'canUploadDocuments', 'canManageTeams', 'canViewReports',
+                            'canViewAuditLogs', 'updatedAt'
+                          ])) ||
+                         // Action 2: Invited employee claims their invite atomically with creating /employees/{uid}
+                         (existing().status == 'PENDING' &&
+                          existing().isActive == true &&
+                          isInviteTarget(existing()) &&
+                          incoming().status == 'CLAIMED' &&
+                          incoming().claimedByUid == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'claimedByUid', 'updatedAt']) &&
+                          existsAfter(/databases/$(database)/documents/employees/$(request.auth.uid)))
+                       );
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 3. /employees/{employeeUid} (ZERO PASSWORDS & ZERO SELF-ESCALATION)
+    // =========================================================================
+    match /employees/{employeeUid} {
+      allow get: if isSignedIn() &&
+                    isValidId(employeeUid) && (
+                      request.auth.uid == employeeUid ||
+                      existing().orgOwnerUid == request.auth.uid ||
+                      request.auth.uid in existing().branchManagerUids
+                    );
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.userId == request.auth.uid
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(employeeUid) &&
+                       request.auth.uid == employeeUid &&
+                       incoming().userId == request.auth.uid &&
+                       isValidEmployee(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) && (
+                         // Path A: One-time initial Organization Owner bootstrap
+                         (!exists(/databases/$(database)/documents/org_config/main) &&
+                          existsAfter(/databases/$(database)/documents/org_config/main) &&
+                          getAfter(/databases/$(database)/documents/org_config/main).data.ownerUid == request.auth.uid &&
+                          incoming().orgOwnerUid == request.auth.uid &&
+                          incoming().role == 'OWNER' &&
+                          incoming().isActive == true &&
+                          incoming().createdByUid == request.auth.uid) ||
+                         // Path B: Claiming an Owner-provisioned invite with exact role & permission match
+                         (exists(/databases/$(database)/documents/org_config/main) &&
+                          matchesClaimedInvite(incoming()))
+                       );
+
+      allow update: if isSignedIn() &&
+                       isValidId(employeeUid) &&
+                       isValidEmployee(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().employeeCode == existing().employeeCode &&
+                       incoming().createdByUid == existing().createdByUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       isActiveOwner() &&
+                       callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'fullName', 'mobile', 'email', 'role', 'branchId', 'branchName', 'branchManagerUids',
+                         'teamId', 'teamName', 'isActive', 'canRegisterCustomer', 'canCreateLoan', 'canApproveLoan',
+                         'canCollectPayment', 'canManageAdvance', 'canRequestPreClosure', 'canApprovePreClosure',
+                         'canUploadDocuments', 'canManageTeams', 'canViewReports', 'canViewAuditLogs', 'updatedAt'
+                       ]);
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 4. /branches/{branchId}
+    // =========================================================================
+    match /branches/{branchId} {
+      allow get: if isSignedIn() &&
+                    isValidId(branchId) && (
+                      existing().orgOwnerUid == request.auth.uid ||
+                      request.auth.uid in existing().managerUids ||
+                      request.auth.uid in existing().memberUids ||
+                      canActInBranch(existing().orgOwnerUid, branchId)
+                    );
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.managerUids ||
+                     request.auth.uid in resource.data.memberUids
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(branchId) &&
+                       isValidBranch(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       incoming().createdByUid == request.auth.uid && (
+                         (!exists(/databases/$(database)/documents/org_config/main) &&
+                          existsAfter(/databases/$(database)/documents/org_config/main) &&
+                          getAfter(/databases/$(database)/documents/org_config/main).data.ownerUid == request.auth.uid &&
+                          incoming().orgOwnerUid == request.auth.uid) ||
+                         (isActiveOwner() && incoming().orgOwnerUid == callerEmp().orgOwnerUid)
+                       );
+
+      allow update: if isSignedIn() &&
+                       isValidId(branchId) &&
+                       isValidBranch(incoming()) &&
+                       incoming().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().branchCode == existing().branchCode &&
+                       incoming().createdByUid == existing().createdByUid &&
+                       incoming().createdAt == existing().createdAt && (
+                         // Action 1: Owner updates branch details or membership
+                         (isActiveOwner() &&
+                          callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'city', 'address', 'managerUids', 'memberUids', 'updatedAt'])) ||
+                         // Action 2: Newly claiming employee registers their UID into their assigned branch
+                         (!exists(/databases/$(database)/documents/employees/$(request.auth.uid)) &&
+                          existsAfter(/databases/$(database)/documents/employees/$(request.auth.uid)) &&
+                          getAfter(/databases/$(database)/documents/employees/$(request.auth.uid)).data.branchId == branchId &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['managerUids', 'memberUids', 'updatedAt']))
+                       );
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 5. /teams/{teamId}
+    // =========================================================================
+    match /teams/{teamId} {
+      allow get: if isSignedIn() &&
+                    isValidId(teamId) && (
+                      existing().orgOwnerUid == request.auth.uid ||
+                      request.auth.uid in existing().branchManagerUids ||
+                      request.auth.uid in existing().memberUids ||
+                      canActInBranch(existing().orgOwnerUid, existing().branchId)
+                    );
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     request.auth.uid in resource.data.memberUids
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(teamId) &&
+                       isValidTeam(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       incoming().createdByUid == request.auth.uid &&
+                       canActInBranch(incoming().orgOwnerUid, incoming().branchId) &&
+                       (callerEmp().role == 'OWNER' || callerEmp().canManageTeams == true) &&
+                       exists(/databases/$(database)/documents/branches/$(incoming().branchId));
+
+      allow update: if isSignedIn() &&
+                       isValidId(teamId) &&
+                       isValidTeam(incoming()) &&
+                       incoming().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().teamCode == existing().teamCode &&
+                       incoming().branchId == existing().branchId &&
+                       incoming().createdByUid == existing().createdByUid &&
+                       incoming().createdAt == existing().createdAt && (
+                         (canActInBranch(existing().orgOwnerUid, existing().branchId) &&
+                          (callerEmp().role == 'OWNER' || callerEmp().canManageTeams == true) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'name', 'managerEmployeeId', 'managerName', 'areaBeat', 'branchManagerUids', 'memberUids', 'updatedAt'
+                          ])) ||
+                         (!exists(/databases/$(database)/documents/employees/$(request.auth.uid)) &&
+                          existsAfter(/databases/$(database)/documents/employees/$(request.auth.uid)) &&
+                          getAfter(/databases/$(database)/documents/employees/$(request.auth.uid)).data.branchId == existing().branchId &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['branchManagerUids', 'memberUids', 'updatedAt']))
+                       );
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 6. /customers/{customerId}
+    // =========================================================================
+    match /customers/{customerId} {
+      allow get: if isSignedIn() &&
+                    isValidId(customerId) &&
+                    canReadScopedRecord(existing().orgOwnerUid, existing().branchId, existing().assignedAgentUid);
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.assignedAgentUid == request.auth.uid
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(customerId) &&
+                       isValidCustomer(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       incoming().createdByUid == request.auth.uid &&
+                       canActInBranch(incoming().orgOwnerUid, incoming().branchId) &&
+                       (callerEmp().role == 'OWNER' || callerEmp().canRegisterCustomer == true) &&
+                       (callerEmp().role != 'COLLECTION_AGENT' || incoming().assignedAgentUid == request.auth.uid) &&
+                       exists(/databases/$(database)/documents/branches/$(incoming().branchId));
+
+      allow update: if isSignedIn() &&
+                       isValidId(customerId) &&
+                       isValidCustomer(incoming()) &&
+                       incoming().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().customerCode == existing().customerCode &&
+                       incoming().branchId == existing().branchId &&
+                       incoming().createdByUid == existing().createdByUid &&
+                       incoming().createdAt == existing().createdAt && (
+                         (isActiveOwner() &&
+                          callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'fullName', 'guardianName', 'mobile', 'alternateMobile', 'address', 'city',
+                            'kycDocumentType', 'kycDocumentNumber', 'occupation', 'monthlyIncomePaise',
+                            'teamId', 'assignedAgentUid', 'assignedAgentName', 'branchManagerUids', 'updatedAt'
+                          ])) ||
+                         (canActOnLoanScope(existing().orgOwnerUid, existing().branchId, existing().assignedAgentUid) &&
+                          callerEmp().canRegisterCustomer == true &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'fullName', 'guardianName', 'mobile', 'alternateMobile', 'address', 'city',
+                            'occupation', 'monthlyIncomePaise', 'updatedAt'
+                          ]))
+                       );
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 7. /customer_documents/{docId}
+    // =========================================================================
+    match /customer_documents/{docId} {
+      allow get: if isSignedIn() &&
+                    isValidId(docId) &&
+                    canReadScopedRecord(existing().orgOwnerUid, existing().branchId, existing().assignedAgentUid);
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.assignedAgentUid == request.auth.uid
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(docId) &&
+                       isValidCustomerDocument(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       incoming().uploadedByUid == request.auth.uid &&
+                       canActOnLoanScope(incoming().orgOwnerUid, incoming().branchId, incoming().assignedAgentUid) &&
+                       (callerEmp().role == 'OWNER' || callerEmp().canUploadDocuments == true) &&
+                       exists(/databases/$(database)/documents/customers/$(incoming().customerId));
+
+      allow update: if isSignedIn() &&
+                       isValidId(docId) &&
+                       isValidCustomerDocument(incoming()) &&
+                       isActiveOwner() &&
+                       callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().sha256Checksum == existing().sha256Checksum &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['branchManagerUids', 'updatedAt']);
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 8. /loans/{loanId}
+    // =========================================================================
+    match /loans/{loanId} {
+      allow get: if isSignedIn() &&
+                    isValidId(loanId) &&
+                    canReadScopedRecord(existing().orgOwnerUid, existing().branchId, existing().assignedAgentUid);
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.assignedAgentUid == request.auth.uid
+                   );
+
+      allow create: if canCreateLoanDoc(loanId);
+
+      allow update: if canUpdateLoanDoc(loanId);
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 9. /installment_schedules/{scheduleId}
+    // =========================================================================
+    match /installment_schedules/{scheduleId} {
+      allow get: if isSignedIn() &&
+                    isValidId(scheduleId) &&
+                    canReadScopedRecord(existing().orgOwnerUid, existing().branchId, existing().assignedAgentUid);
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.assignedAgentUid == request.auth.uid
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(scheduleId) &&
+                       isValidInstallmentSchedule(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       canActInBranch(incoming().orgOwnerUid, incoming().branchId) &&
+                       (callerEmp().role == 'OWNER' || callerEmp().canCreateLoan == true || callerEmp().canApproveLoan == true);
+
+      allow update: if canUpdateScheduleDoc(scheduleId);
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 10. /payments/{paymentId} (PERMANENT NON-DELETABLE FINANCIAL LEDGER)
+    // =========================================================================
+    match /payments/{paymentId} {
+      allow get: if isSignedIn() &&
+                    isValidId(paymentId) && (
+                      canReadScopedRecord(existing().orgOwnerUid, existing().branchId, existing().assignedAgentUid) ||
+                      (isActiveEmployee() && existing().collectedByUid == request.auth.uid)
+                    );
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.collectedByUid == request.auth.uid ||
+                     resource.data.assignedAgentUid == request.auth.uid
+                   );
+
+      allow create: if canCreatePaymentDoc(paymentId);
+
+      allow update: if canUpdatePaymentDoc(paymentId);
+
+      // CRITICAL INVARIANT: Confirmed payment transactions can NEVER be permanently deleted.
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 10b. /payment_adjustments/{adjustmentId} (IMMUTABLE REVERSAL & CORRECTION HISTORY)
+    // =========================================================================
+    match /payment_adjustments/{adjustmentId} {
+      allow get: if isSignedIn() &&
+                    isValidId(adjustmentId) &&
+                    canReadScopedRecord(existing().orgOwnerUid, existing().branchId, existing().assignedAgentUid);
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.assignedAgentUid == request.auth.uid ||
+                     resource.data.performedByUid == request.auth.uid
+                   );
+
+      allow create: if canCreatePaymentAdjustmentDoc(adjustmentId);
+
+      allow update: if isSignedIn() &&
+                       isValidId(adjustmentId) &&
+                       isValidPaymentAdjustment(incoming()) &&
+                       isActiveOwner() &&
+                       callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().originalPaymentId == existing().originalPaymentId &&
+                       incoming().originalAmountPaise == existing().originalAmountPaise &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['branchManagerUids', 'updatedAt']);
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 11. /advance_transactions/{txId} (APPEND-ONLY ADVANCE LEDGER)
+    // =========================================================================
+    match /advance_transactions/{txId} {
+      allow get: if isSignedIn() &&
+                    isValidId(txId) &&
+                    canReadScopedRecord(existing().orgOwnerUid, existing().branchId, existing().assignedAgentUid);
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.assignedAgentUid == request.auth.uid ||
+                     resource.data.createdByUid == request.auth.uid
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(txId) &&
+                       isValidAdvanceTransaction(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       incoming().createdByUid == request.auth.uid &&
+                       canActOnLoanScope(incoming().orgOwnerUid, incoming().branchId, incoming().assignedAgentUid) &&
+                       (callerEmp().role == 'OWNER' ||
+                        callerEmp().canManageAdvance == true ||
+                        callerEmp().canCollectPayment == true) &&
+                       exists(/databases/$(database)/documents/loans/$(incoming().loanId));
+
+      allow update: if isSignedIn() &&
+                       isValidId(txId) &&
+                       isValidAdvanceTransaction(incoming()) &&
+                       isActiveOwner() &&
+                       callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().amountPaise == existing().amountPaise &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['branchManagerUids', 'updatedAt']);
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 12. /preclosure_requests/{requestId}
+    // =========================================================================
+    match /preclosure_requests/{requestId} {
+      allow get: if isSignedIn() &&
+                    isValidId(requestId) &&
+                    canReadScopedRecord(existing().orgOwnerUid, existing().branchId, existing().assignedAgentUid);
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.assignedAgentUid == request.auth.uid ||
+                     resource.data.requestedByUid == request.auth.uid
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       isValidPreClosureRequest(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       incoming().requestedByUid == request.auth.uid &&
+                       incoming().status == 'PENDING' &&
+                       canActOnLoanScope(incoming().orgOwnerUid, incoming().branchId, incoming().assignedAgentUid) &&
+                       (callerEmp().role == 'OWNER' || callerEmp().canRequestPreClosure == true) &&
+                       exists(/databases/$(database)/documents/loans/$(incoming().loanId));
+
+      allow update: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       isValidPreClosureRequest(incoming()) &&
+                       incoming().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().requestCode == existing().requestCode &&
+                       incoming().loanId == existing().loanId &&
+                       incoming().branchId == existing().branchId &&
+                       incoming().netSettlementPaise == existing().netSettlementPaise &&
+                       incoming().requestedByUid == existing().requestedByUid &&
+                       incoming().createdAt == existing().createdAt && (
+                         (isActiveOwner() &&
+                          callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'status', 'reviewedByUid', 'reviewedByName', 'reviewedDateDdMmYyyy',
+                            'reviewRemarks', 'settlementPaymentId', 'branchManagerUids', 'updatedAt'
+                          ])) ||
+                         // Terminal State Lock: Only PENDING requests can be settled/rejected by authorized non-owners
+                         (existing().status == 'PENDING' &&
+                          incoming().status in ['APPROVED_SETTLED', 'REJECTED'] &&
+                          incoming().reviewedByUid == request.auth.uid &&
+                          canActInBranch(existing().orgOwnerUid, existing().branchId) &&
+                          callerEmp().canApprovePreClosure == true &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'status', 'reviewedByUid', 'reviewedByName', 'reviewedDateDdMmYyyy',
+                            'reviewRemarks', 'settlementPaymentId', 'updatedAt'
+                          ]))
+                       );
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 13. /audit_logs/{logId} (IMMUTABLE AUDIT TRAIL)
+    // =========================================================================
+    match /audit_logs/{logId} {
+      allow get: if isSignedIn() &&
+                    isValidId(logId) && (
+                      existing().orgOwnerUid == request.auth.uid ||
+                      request.auth.uid in existing().branchManagerUids ||
+                      existing().actorUid == request.auth.uid
+                    );
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     request.auth.uid in resource.data.branchManagerUids ||
+                     resource.data.actorUid == request.auth.uid
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(logId) &&
+                       isValidAuditLog(incoming()) &&
+                       incoming().actorUid == request.auth.uid && (
+                         (!exists(/databases/$(database)/documents/org_config/main) &&
+                          existsAfter(/databases/$(database)/documents/org_config/main) &&
+                          getAfter(/databases/$(database)/documents/org_config/main).data.ownerUid == request.auth.uid &&
+                          incoming().orgOwnerUid == request.auth.uid) ||
+                         (isActiveEmployee() && incoming().orgOwnerUid == callerEmp().orgOwnerUid)
+                       );
+
+      allow update: if isSignedIn() &&
+                       isValidId(logId) &&
+                       isValidAuditLog(incoming()) &&
+                       isActiveOwner() &&
+                       callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().actorUid == existing().actorUid &&
+                       incoming().action == existing().action &&
+                       incoming().summary == existing().summary &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['branchManagerUids']);
+
+      allow delete: if false;
+    }
+  }
+}

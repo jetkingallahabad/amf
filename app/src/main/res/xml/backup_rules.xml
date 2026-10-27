@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Exclude sensitive customer KYC documents, local financial ledger DB, and session tokens from unencrypted backup -->
+    <exclude domain="file" path="customer_docs" />
+    <exclude domain="file" path="datastore" />
+    <exclude domain="database" path="." />
+</full-backup-content>
