@@ -1,36 +1,18 @@
-name: Build AM Finance Manager APK
-
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+      - name: Find Android Project
+        run: |
+          echo "Searching for Gradle Wrapper..."
+          find . -type f -name gradlew
 
       - name: Build Debug APK
         run: |
+          GRADLEW=$(find . -type f -name gradlew | head -n 1)
+
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: gradlew file not found in repository"
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$GRADLEW")
+          cd "$PROJECT_DIR"
           chmod +x ./gradlew
           ./gradlew assembleDebug
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: AM-Finance-Manager-APK
-          path: '**/build/outputs/apk/debug/*.apk'
-          if-no-files-found: error
