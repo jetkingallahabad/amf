@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "403485408540",
+    "project_id": "amfintech-e138d",
+    "storage_bucket": "amfintech-e138d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:403485408540:android:d404ad0fbc61821ae28ed9",
+        "android_client_info": {
+          "package_name": "com.aistudio.loanfinancemanager.vqmxkr"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBd5y0aZxA_x5ydDL39zUcvcriFzdkhF3Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
