@@ -135,6 +135,51 @@ interface LoanFinanceDao {
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsertCustomerDocuments(docs: List<CustomerDocumentEntity>)
 
+  // --- Owner-Configured Fixed Loan Products (Activated/Deactivated, Never Deleted) ---
+  @Query("SELECT COUNT(*) FROM loan_products")
+  suspend fun countLoanProducts(): Int
+
+  @Query(
+    """
+    SELECT * FROM loan_products 
+    ORDER BY isActive DESC, principalPaise ASC, repaymentFrequency ASC, durationCount ASC
+    """,
+  )
+  fun observeAllLoanProducts(): Flow<List<LoanProductEntity>>
+
+  @Query(
+    """
+    SELECT * FROM loan_products 
+    WHERE isActive = 1 
+    ORDER BY principalPaise ASC, repaymentFrequency ASC, durationCount ASC
+    """,
+  )
+  fun observeActiveLoanProducts(): Flow<List<LoanProductEntity>>
+
+  @Query("SELECT * FROM loan_products WHERE id = :productId LIMIT 1")
+  suspend fun getLoanProductById(productId: String): LoanProductEntity?
+
+  @Query("SELECT * FROM loan_products WHERE productCode = :productCode LIMIT 1")
+  suspend fun getLoanProductByCode(productCode: String): LoanProductEntity?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun insertLoanProduct(product: LoanProductEntity)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertLoanProducts(products: List<LoanProductEntity>)
+
+  @Update
+  suspend fun updateLoanProduct(product: LoanProductEntity)
+
+  @Transaction
+  suspend fun commitLoanProductMutation(
+    product: LoanProductEntity,
+    auditLog: AuditLogEntity,
+  ) {
+    insertLoanProduct(product)
+    insertAuditLog(auditLog)
+  }
+
   // --- Loans & Schedules ---
   @Query("SELECT COUNT(*) FROM loans")
   suspend fun countLoans(): Int

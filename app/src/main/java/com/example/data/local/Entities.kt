@@ -206,12 +206,48 @@ data class CustomerDocumentEntity(
 )
 
 @Entity(
+  tableName = "loan_products",
+  indices = [
+    Index(value = ["productCode"], unique = true),
+    Index(value = ["principalPaise", "repaymentFrequency"]),
+    Index(value = ["isActive"]),
+  ],
+)
+data class LoanProductEntity(
+  @PrimaryKey val id: String,
+  val orgOwnerUid: String = "",
+  val productCode: String,
+  val name: String,
+  val principalPaise: Long,
+  val repaymentFrequency: RepaymentFrequency,
+  val durationCount: Int,
+  val totalInstallments: Int,
+  val fixedInstallmentPaise: Long,
+  val totalPayablePaise: Long,
+  val processingFeePaise: Long = 0L,
+  val isActive: Boolean = true,
+  val createdByEmployeeId: String,
+  val createdDateDdMmYyyy: String,
+  val updatedDateDdMmYyyy: String,
+  val createdAtMillis: Long,
+  val updatedAtMillis: Long,
+) {
+  val durationLabel: String
+    get() = if (repaymentFrequency == RepaymentFrequency.DAILY) {
+      "$durationCount ${if (durationCount == 1) "Day" else "Days"}"
+    } else {
+      "$durationCount ${if (durationCount == 1) "Week" else "Weeks"}"
+    }
+}
+
+@Entity(
   tableName = "loans",
   indices = [
     Index(value = ["loanCode"], unique = true),
     Index(value = ["customerId"]),
     Index(value = ["branchId"]),
     Index(value = ["assignedAgentId"]),
+    Index(value = ["loanProductId"]),
   ],
 )
 data class LoanEntity(
@@ -228,9 +264,12 @@ data class LoanEntity(
   val teamId: String?,
   val assignedAgentId: String,
   val assignedAgentName: String,
+  val loanProductId: String = "",
+  val loanProductCode: String = "",
+  val loanProductName: String = "",
   val productType: LoanProductType,
   val principalPaise: Long,
-  val annualInterestRateBps: Int,
+  val annualInterestRateBps: Int = 0,
   val processingFeePaise: Long,
   val totalInterestPaise: Long,
   val totalPayablePaise: Long,
@@ -258,6 +297,20 @@ data class LoanEntity(
   val rejectionReason: String = "",
   val createdAtMillis: Long,
 ) {
+  val displayProductLabel: String
+    get() = when {
+      loanProductName.isNotBlank() && loanProductCode.isNotBlank() -> "$loanProductName ($loanProductCode)"
+      loanProductName.isNotBlank() -> loanProductName
+      else -> productType.displayTitle
+    }
+
+  val durationLabel: String
+    get() = if (repaymentFrequency == RepaymentFrequency.DAILY) {
+      "$totalInstallments ${if (totalInstallments == 1) "Day" else "Days"}"
+    } else {
+      "$totalInstallments ${if (totalInstallments == 1) "Week" else "Weeks"}"
+    }
+
   fun branchManagerUidsList(): List<String> = decodeUidList(branchManagerUidsCsv)
 }
 
@@ -493,7 +546,7 @@ data class AuditLogEntity(
   val actorName: String,
   val actorRole: UserRole,
   val branchId: String,
-  val category: String, // AUTH, EMPLOYEE, TEAM, CUSTOMER, LOAN, PAYMENT, ADVANCE, PRECLOSURE, SYNC
+  val category: String, // AUTH, EMPLOYEE, TEAM, CUSTOMER, LOAN, LOAN_PRODUCT, PAYMENT, ADVANCE, PRECLOSURE, SYNC
   val action: String,
   val targetType: String,
   val targetId: String,

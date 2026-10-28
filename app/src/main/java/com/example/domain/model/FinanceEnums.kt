@@ -1,8 +1,6 @@
 package com.example.domain.model
 
 import com.example.util.IndianFinanceFormatter
-import java.math.BigDecimal
-import java.math.RoundingMode
 
 enum class UserRole(val displayTitle: String) {
   OWNER("Owner"),
@@ -15,11 +13,19 @@ enum class RepaymentFrequency(val displayTitle: String, val stepDays: Int, val s
   WEEKLY("Weekly EMI", 7, "EMI"),
 }
 
-enum class LoanProductType(val displayTitle: String, val defaultRatePercent: String) {
-  DAILY_BUSINESS_EDI("Daily Trade EDI Loan", "18"),
-  WEEKLY_GROUP_EMI("Weekly Micro EMI Loan", "20"),
-  MICRO_ENTERPRISE("Small Enterprise Finance", "16"),
-  EMERGENCY_BRIDGE("Short-Term Working Capital", "22"),
+enum class LoanProductType(val displayTitle: String) {
+  DAILY_BUSINESS_EDI("Daily Fixed EDI Loan"),
+  WEEKLY_GROUP_EMI("Weekly Fixed EMI Loan"),
+  MICRO_ENTERPRISE("Small Enterprise Finance"),
+  EMERGENCY_BRIDGE("Short-Term Working Capital"),
+  ;
+
+  companion object {
+    fun forFrequency(frequency: RepaymentFrequency): LoanProductType = when (frequency) {
+      RepaymentFrequency.DAILY -> DAILY_BUSINESS_EDI
+      RepaymentFrequency.WEEKLY -> WEEKLY_GROUP_EMI
+    }
+  }
 }
 
 enum class LoanStatus(val displayTitle: String) {
@@ -212,75 +218,153 @@ data class RolePermissionTemplate(
 }
 
 /**
- * Deterministic loan schedule calculator using exact Paise arithmetic.
+ * Validates Owner-configured fixed loan products without any percentage-based interest calculation.
+ * Total Scheduled Repayment is strictly Fixed EMI/EDI × Number of Installments.
+ */
+object FixedLoanProductValidator {
+  const val MIN_PRINCIPAL_PAISE = 10_000L // ₹100
+  const val MAX_PRINCIPAL_PAISE = 500_000_000L // ₹50,00,000
+  const val MIN_INSTALLMENTS = 1
+  const val MAX_INSTALLMENTS = 1_000
+
+  data class ValidatedProductTerms(
+    val name: String,
+    val principalPaise: Long,
+    val repaymentFrequency: RepaymentFrequency,
+    val durationCount: Int,
+    val totalInstallments: Int,
+    val fixedInstallmentPaise: Long,
+    val totalScheduledRepaymentPaise: Long,
+    val fixedMarginPaise: Long,
+    val processingFeePaise: Long,
+  )
+
+  fun validate(
+    rawName: String,
+    principalPaise: Long,
+    repaymentFrequency: RepaymentFrequency,
+    durationCount: Int,
+    fixedInstallmentPaise: Long,
+    processingFeePaise: Long = 0L,
+  ): ValidatedProductTerms {
+    require(principalPaise in MIN_PRINCIPAL_PAISE..MAX_PRINCIPAL_PAISE) {
+      "Loan amount must be between ₹100 and ₹50,00,000."
+    }
+    val unitPlural = if (repaymentFrequency == RepaymentFrequency.DAILY) "days" else "weeks"
+    require(durationCount in MIN_INSTALLMENTS..MAX_INSTALLMENTS) {
+      "Loan duration must be between $MIN_INSTALLMENTS and $MAX_INSTALLMENTS $unitPlural."
+    }
+    val totalInstallments = durationCount
+    require(fixedInstallmentPaise > 0L) {
+      "Fixed ${repaymentFrequency.shortLabel} amount must be greater than ₹0."
+    }
+    val totalScheduledRepaymentPaise = try {
+      Math.multiplyExact(fixedInstallmentPaise, totalInstallments.toLong())
+    } catch (_: ArithmeticException) {
+      throw IllegalArgumentException("Total scheduled repayment exceeds maximum supported value.")
+    }
+    require(totalScheduledRepaymentPaise >= principalPaise) {
+      "Total Scheduled Repayment (${IndianFinanceFormatter.formatPaise(totalScheduledRepaymentPaise)} = " +
+        "${IndianFinanceFormatter.formatPaise(fixedInstallmentPaise)} × $totalInstallments) cannot be less than Loan Amount (${IndianFinanceFormatter.formatPaise(principalPaise)})."
+    }
+    require(processingFeePaise in 0L until principalPaise) {
+      "Processing fee must be non-negative and less than the Loan Amount."
+    }
+    val defaultName = buildDefaultProductName(
+      principalPaise = principalPaise,
+      repaymentFrequency = repaymentFrequency,
+      durationCount = durationCount,
+      fixedInstallmentPaise = fixedInstallmentPaise,
+    )
+    val cleanName = rawName.trim().ifBlank { defaultName }
+    require(cleanName.length in 3..120) {
+      "Product name must be between 3 and 120 characters."
+    }
+
+    return ValidatedProductTerms(
+      name = cleanName,
+      principalPaise = principalPaise,
+      repaymentFrequency = repaymentFrequency,
+      durationCount = durationCount,
+      totalInstallments = totalInstallments,
+      fixedInstallmentPaise = fixedInstallmentPaise,
+      totalScheduledRepaymentPaise = totalScheduledRepaymentPaise,
+      fixedMarginPaise = totalScheduledRepaymentPaise - principalPaise,
+      processingFeePaise = processingFeePaise,
+    )
+  }
+
+  fun buildDefaultProductName(
+    principalPaise: Long,
+    repaymentFrequency: RepaymentFrequency,
+    durationCount: Int,
+    fixedInstallmentPaise: Long,
+  ): String {
+    val unit = if (repaymentFrequency == RepaymentFrequency.DAILY) {
+      if (durationCount == 1) "Day" else "Days"
+    } else {
+      if (durationCount == 1) "Week" else "Weeks"
+    }
+    return "${IndianFinanceFormatter.formatPaise(principalPaise)} • $durationCount $unit • ${IndianFinanceFormatter.formatPaise(fixedInstallmentPaise)} ${repaymentFrequency.shortLabel}"
+  }
+}
+
+/**
+ * Deterministic fixed-product loan schedule calculator using exact Paise arithmetic.
+ * Total Scheduled Repayment = Fixed EMI/EDI × Number of Installments (no percentage calculation).
  */
 object LoanScheduleCalculator {
 
-  data class LoanQuote(
+  data class FixedLoanQuote(
     val principalPaise: Long,
-    val annualInterestRateBps: Int,
     val processingFeePaise: Long,
-    val totalInterestPaise: Long,
-    val totalPayablePaise: Long,
-    val installmentAmountPaise: Long,
-    val lastInstallmentAmountPaise: Long,
+    val totalMarginPaise: Long,
+    val totalScheduledRepaymentPaise: Long,
+    val fixedInstallmentPaise: Long,
     val totalInstallments: Int,
+    val durationCount: Int,
     val frequency: RepaymentFrequency,
-    val firstDueDateDdMmYyyy: String,
-    val maturityDateDdMmYyyy: String,
+    val repaymentStartDateDdMmYyyy: String,
+    val expectedCompletionDateDdMmYyyy: String,
   )
 
-  fun calculateQuote(
+  fun calculateFixedProductQuote(
     principalPaise: Long,
-    annualRatePercent: Double,
-    processingFeePaise: Long,
+    fixedInstallmentPaise: Long,
     totalInstallments: Int,
     frequency: RepaymentFrequency,
     disbursementDateDdMmYyyy: String,
-  ): LoanQuote? {
-    if (principalPaise <= 0L || totalInstallments <= 0 || annualRatePercent < 0.0) return null
+    processingFeePaise: Long = 0L,
+  ): FixedLoanQuote? {
+    if (principalPaise <= 0L || fixedInstallmentPaise <= 0L || totalInstallments !in 1..1000) return null
+    if (processingFeePaise < 0L || processingFeePaise >= principalPaise) return null
     if (IndianFinanceFormatter.parseDdMmYyyyToMillis(disbursementDateDdMmYyyy) == null) return null
 
-    val rateBps = (annualRatePercent * 100.0).toInt()
-    val durationDays = totalInstallments * frequency.stepDays
-    // Proportional flat interest for microfinance EDI/EMI clarity: P * R * (days / 365)
-    val interestBd = BigDecimal(principalPaise)
-      .multiply(BigDecimal.valueOf(annualRatePercent))
-      .multiply(BigDecimal(durationDays))
-      .divide(BigDecimal(36500), 0, RoundingMode.HALF_UP)
+    val totalScheduledRepaymentPaise = try {
+      Math.multiplyExact(fixedInstallmentPaise, totalInstallments.toLong())
+    } catch (_: ArithmeticException) {
+      return null
+    }
+    if (totalScheduledRepaymentPaise < principalPaise) return null
 
-    val totalInterestPaise = interestBd.toLong().coerceAtLeast(0L)
-    val totalPayablePaise = principalPaise + totalInterestPaise
-
-    // Round regular installment to nearest ₹1 (100 paise) if > 1 installment, adjusting final installment
-    val rawInstallment = totalPayablePaise / totalInstallments
-    val regularInstallment = if (totalInstallments == 1) {
-      totalPayablePaise
-    } else {
-      ((rawInstallment + 50L) / 100L) * 100L
-    }.coerceAtLeast(100L)
-
-    val sumBeforeLast = regularInstallment * (totalInstallments - 1)
-    val lastInstallment = (totalPayablePaise - sumBeforeLast).coerceAtLeast(0L)
-
+    val totalMarginPaise = (totalScheduledRepaymentPaise - principalPaise).coerceAtLeast(0L)
     val (firstDue, _) = IndianFinanceFormatter.addDays(disbursementDateDdMmYyyy, frequency.stepDays)
     val (maturity, _) = IndianFinanceFormatter.addDays(
       disbursementDateDdMmYyyy,
       frequency.stepDays * totalInstallments,
     )
 
-    return LoanQuote(
+    return FixedLoanQuote(
       principalPaise = principalPaise,
-      annualInterestRateBps = rateBps,
       processingFeePaise = processingFeePaise,
-      totalInterestPaise = totalInterestPaise,
-      totalPayablePaise = totalPayablePaise,
-      installmentAmountPaise = regularInstallment,
-      lastInstallmentAmountPaise = lastInstallment,
+      totalMarginPaise = totalMarginPaise,
+      totalScheduledRepaymentPaise = totalScheduledRepaymentPaise,
+      fixedInstallmentPaise = fixedInstallmentPaise,
       totalInstallments = totalInstallments,
+      durationCount = totalInstallments,
       frequency = frequency,
-      firstDueDateDdMmYyyy = firstDue,
-      maturityDateDdMmYyyy = maturity,
+      repaymentStartDateDdMmYyyy = firstDue,
+      expectedCompletionDateDdMmYyyy = maturity,
     )
   }
 }

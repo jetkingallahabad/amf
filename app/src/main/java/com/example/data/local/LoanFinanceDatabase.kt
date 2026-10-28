@@ -27,7 +27,8 @@ class FinanceTypeConverters {
   @TypeConverter fun toFrequency(v: String): RepaymentFrequency = RepaymentFrequency.valueOf(v)
 
   @TypeConverter fun fromProductType(v: LoanProductType): String = v.name
-  @TypeConverter fun toProductType(v: String): LoanProductType = LoanProductType.valueOf(v)
+  @TypeConverter fun toProductType(v: String): LoanProductType =
+    runCatching { LoanProductType.valueOf(v) }.getOrDefault(LoanProductType.DAILY_BUSINESS_EDI)
 
   @TypeConverter fun fromLoanStatus(v: LoanStatus): String = v.name
   @TypeConverter fun toLoanStatus(v: String): LoanStatus = LoanStatus.valueOf(v)
@@ -72,6 +73,7 @@ class FinanceTypeConverters {
     EmployeeInviteEntity::class,
     CustomerEntity::class,
     CustomerDocumentEntity::class,
+    LoanProductEntity::class,
     LoanEntity::class,
     InstallmentScheduleEntity::class,
     PaymentEntity::class,
@@ -81,7 +83,7 @@ class FinanceTypeConverters {
     SyncQueueEntity::class,
     AuditLogEntity::class,
   ],
-  version = 4,
+  version = 5,
   exportSchema = false,
 )
 @TypeConverters(FinanceTypeConverters::class)
