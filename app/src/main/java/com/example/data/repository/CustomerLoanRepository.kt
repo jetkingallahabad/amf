@@ -954,7 +954,7 @@ class CustomerLoanRepository(
         action = if (canApproveNow) "LOAN_CREATED_AND_DISBURSED" else "LOAN_APPLICATION_SUBMITTED",
         targetType = "LOAN",
         targetId = loan.loanCode,
-        summary = "${if (canApproveNow) "Disbursed" else "Submitted application for"} ${repaymentFrequency.displayTitle} loan ${loan.loanCode} for ${customer.fullName}: Principal ${IndianFinanceFormatter.formatPaise(principalPaise)}, Total Payable ${IndianFinanceFormatter.formatPaise(quote.totalPayablePaise)} (${quote.totalInstallments} installments)",
+        summary = "${if (canApproveNow) "Disbursed" else "Submitted application for"} ${repaymentFrequency.displayTitle} loan ${loan.loanCode} for ${customer.fullName}: Principal ${IndianFinanceFormatter.formatPaise(principalPaise)}, Total Payable ${IndianFinanceFormatter.formatPaise(quote.totalScheduledRepaymentPaise)} (${quote.totalInstallments} installments)",
         timestampDdMmYyyyHhMm = IndianFinanceFormatter.formatDateTimeSeconds(now),
         createdAtMillis = now,
       )
