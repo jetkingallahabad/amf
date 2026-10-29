@@ -85,7 +85,7 @@ fun NewLoanApplicationScreen(
     customerId: String,
     productType: LoanProductType,
     principalPaise: Long,
-    annualInterestRatePercent: Double,
+    fixedInstallmentPaise: Long,
     processingFeePaise: Long,
     frequency: RepaymentFrequency,
     totalInstallments: Int,
@@ -103,10 +103,10 @@ fun NewLoanApplicationScreen(
   }
   var productType by rememberSaveable { mutableStateOf(LoanProductType.DAILY_BUSINESS_EDI) }
   var frequency by rememberSaveable { mutableStateOf(RepaymentFrequency.DAILY) }
-  var principalRupees by rememberSaveable { mutableStateOf("25000") }
-  var interestRateStr by rememberSaveable { mutableStateOf("18") }
-  var processingFeeRupees by rememberSaveable { mutableStateOf("500") }
-  var installmentsStr by rememberSaveable { mutableStateOf("100") }
+  var principalRupees by rememberSaveable { mutableStateOf("5000") }
+  var fixedInstallmentRupees by rememberSaveable { mutableStateOf("100") }
+  var processingFeeRupees by rememberSaveable { mutableStateOf("0") }
+  var installmentsStr by rememberSaveable { mutableStateOf("60") }
   var disbursementDate by rememberSaveable { mutableStateOf(IndianFinanceFormatter.todayDdMmYyyy()) }
   val canApprove = actor.role == UserRole.OWNER || actor.canApproveLoan
   var disburseImmediately by rememberSaveable { mutableStateOf(canApprove) }
@@ -125,12 +125,12 @@ fun NewLoanApplicationScreen(
 
   val principalPaise = IndianFinanceFormatter.parseRupeesToPaise(principalRupees) ?: 0L
   val feePaise = IndianFinanceFormatter.parseRupeesToPaise(processingFeeRupees) ?: 0L
-  val rateDouble = interestRateStr.toDoubleOrNull() ?: -1.0
+  val fixedInstallmentPaise = IndianFinanceFormatter.parseRupeesToPaise(fixedInstallmentRupees) ?: 0L
   val tenureInt = installmentsStr.toIntOrNull() ?: 0
 
-  val liveQuote = LoanScheduleCalculator.calculateQuote(
+  val liveQuote = LoanScheduleCalculator.calculateFixedProductQuote(
     principalPaise = principalPaise,
-    annualRatePercent = rateDouble.coerceAtLeast(0.0),
+    fixedInstallmentPaise = fixedInstallmentPaise,
     processingFeePaise = feePaise,
     totalInstallments = tenureInt,
     frequency = frequency,
@@ -139,7 +139,7 @@ fun NewLoanApplicationScreen(
 
   val validationError = when {
     principalPaise !in 10_000L..500_000_000L -> "Principal must be between ₹100 and ₹50,00,000."
-    rateDouble !in 0.0..60.0 -> "Annual interest rate must be between 0% and 60%."
+    fixedInstallmentPaise <= 0L -> "Fixed EMI/EDI amount must be greater than ₹0."
     feePaise < 0L || feePaise >= principalPaise -> "Processing fee must be non-negative and less than principal."
     tenureInt !in 1..1000 -> "Tenure must be between 1 and 1,000 installments."
     liveQuote == null -> "Enter a valid disbursement date in DD-MM-YYYY format."
@@ -217,7 +217,8 @@ fun NewLoanApplicationScreen(
             selected = frequency == freq,
             onClick = {
               frequency = freq
-              installmentsStr = if (freq == RepaymentFrequency.DAILY) "100" else "24"
+              installmentsStr = if (freq == RepaymentFrequency.DAILY) "60" else "12"
+              fixedInstallmentRupees = if (freq == RepaymentFrequency.DAILY) "100" else "500"
             },
             shape = SegmentedButtonDefaults.itemShape(index = idx, count = RepaymentFrequency.entries.size),
             modifier = Modifier.testTag("freq_btn_${freq.name.lowercase()}"),
@@ -251,7 +252,6 @@ fun NewLoanApplicationScreen(
               text = { Text(pt.displayTitle) },
               onClick = {
                 productType = pt
-                interestRateStr = pt.defaultRatePercent
                 prodDropdownExpanded = false
               },
             )
@@ -271,14 +271,14 @@ fun NewLoanApplicationScreen(
             .testTag("loan_principal_input"),
         )
         OutlinedTextField(
-          value = interestRateStr,
-          onValueChange = { interestRateStr = it },
-          label = { Text("Interest (% p.a.)") },
+          value = fixedInstallmentRupees,
+          onValueChange = { fixedInstallmentRupees = it.filter { ch -> ch.isDigit() || ch == '.' } },
+          label = { Text("Fixed EMI/EDI (₹) *") },
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
           singleLine = true,
           modifier = Modifier
             .weight(0.8f)
-            .testTag("loan_rate_input"),
+            .testTag("loan_fixed_installment_input"),
         )
       }
 
@@ -315,7 +315,7 @@ fun NewLoanApplicationScreen(
         val presets = if (frequency == RepaymentFrequency.DAILY) {
           listOf("30", "60", "90", "100", "120")
         } else {
-          listOf("12", "16", "24", "36", "52")
+          listOf("12", "15", "16", "24", "36", "52")
         }
         presets.forEach { preset ->
           AssistChip(
@@ -482,14 +482,14 @@ fun NewLoanApplicationScreen(
             QuoteRow("Processing Fee Deducted", "- ${IndianFinanceFormatter.formatPaise(liveQuote.processingFeePaise)}")
             QuoteRow("Net Disbursed Payout", IndianFinanceFormatter.formatPaise(netDisbursedPayout))
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            QuoteRow("Total Interest", IndianFinanceFormatter.formatPaise(liveQuote.totalInterestPaise))
-            QuoteRow("Total Payable", IndianFinanceFormatter.formatPaise(liveQuote.totalPayablePaise))
+            QuoteRow("Fixed Margin", IndianFinanceFormatter.formatPaise(liveQuote.totalMarginPaise))
+            QuoteRow("Total Payable", IndianFinanceFormatter.formatPaise(liveQuote.totalScheduledRepaymentPaise))
             QuoteRow(
-              "Installment (${frequency.shortLabel})",
-              "${IndianFinanceFormatter.formatPaise(liveQuote.installmentAmountPaise)} × ${liveQuote.totalInstallments}",
+              "Fixed Installment (${frequency.shortLabel})",
+              "${IndianFinanceFormatter.formatPaise(liveQuote.fixedInstallmentPaise)} × ${liveQuote.totalInstallments}",
             )
-            QuoteRow("First Installment Due", liveQuote.firstDueDateDdMmYyyy)
-            QuoteRow("Maturity Date", liveQuote.maturityDateDdMmYyyy)
+            QuoteRow("First Installment Due", liveQuote.repaymentStartDateDdMmYyyy)
+            QuoteRow("Maturity Date", liveQuote.expectedCompletionDateDdMmYyyy)
           }
         }
       }
@@ -500,7 +500,7 @@ fun NewLoanApplicationScreen(
             selectedCustomerId,
             productType,
             principalPaise,
-            rateDouble,
+            fixedInstallmentPaise,
             feePaise,
             frequency,
             tenureInt,
