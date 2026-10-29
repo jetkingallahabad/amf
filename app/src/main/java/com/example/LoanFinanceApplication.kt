@@ -32,14 +32,9 @@ class AppContainer(private val application: Application) {
     }
   }
 
-  // Always resolve the provisioned named Firestore database ID from firebase_applet_config.xml
-  val firestoreDatabaseId: String by lazy {
-    application.getString(R.string.firestore_database_id)
-  }
-
   val firestore: FirebaseFirestore by lazy {
     ensureFirebaseInitialized()
-    FirebaseFirestore.getInstance(firestoreDatabaseId)
+    FirebaseFirestore.getInstance()
   }
 
   val firebaseAuth: FirebaseAuth by lazy {
