@@ -59,6 +59,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import com.example.R
@@ -75,25 +76,8 @@ fun GoogleSignInScreen(
   onAuthSuccess: () -> Unit,
   onAuthError: (String) -> Unit,
 ) {
-  val context = LocalContext.current
-  val scope = rememberCoroutineScope()
-  val credentialManager = remember(context) { CredentialManager.create(context) }
-
-  LaunchedEffect(Unit) {
-    onSetBusy(true)
-    GoogleCredentialAuthHelper.attemptAutoSignIn(
-      context = context,
-      credentialManager = credentialManager,
-      scope = scope,
-      onAuthSuccess = {
-        onSetBusy(false)
-        onAuthSuccess()
-      },
-      onUnauthenticated = {
-        onSetBusy(false)
-      },
-    )
-  }
+  var mobile by rememberSaveable { mutableStateOf("") }
+  var password by rememberSaveable { mutableStateOf("") }
 
   Box(
     contentAlignment = Alignment.Center,
@@ -113,9 +97,8 @@ fun GoogleSignInScreen(
     ) {
       HeroBrandBanner(
         title = stringResource(R.string.app_name),
-        subtitle = "Cloud Firestore Ledger • Role-Based Access • Offline Collection Sync",
+        subtitle = "AM Finance • Employee Login",
       )
-
       Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -127,51 +110,67 @@ fun GoogleSignInScreen(
           Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
               imageVector = Icons.Default.Lock,
-              contentDescription = "Secure Sign In",
+              contentDescription = "Employee Login",
               tint = MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.width(8.dp))
-            Text(
-              text = stringResource(R.string.login_title),
-              style = MaterialTheme.typography.titleLarge,
-            )
+            Text("Login with Mobile Number", style = MaterialTheme.typography.titleLarge)
           }
-
           Text(
-            text = stringResource(R.string.login_subtitle),
+            "Enter the mobile number and password assigned to you in Firebase.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
+          if (!errorMessage.isNullOrBlank()) ErrorBanner(errorMessage)
 
-          if (!errorMessage.isNullOrBlank()) {
-            ErrorBanner(errorMessage)
-          }
-
+          OutlinedTextField(
+            value = mobile,
+            onValueChange = { value -> mobile = value.filter { it.isDigit() }.take(10) },
+            label = { Text("10-digit mobile number") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isBusy,
+          )
+          OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("Password") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isBusy,
+          )
           Button(
             onClick = {
               onClearError()
+              if (mobile.length != 10 || password.isBlank()) {
+                onAuthError("Enter a valid 10-digit mobile number and password.")
+                return@Button
+              }
               onSetBusy(true)
-              GoogleCredentialAuthHelper.onGoogleSignInClicked(
-                context = context,
-                credentialManager = credentialManager,
-                scope = scope,
-                onAuthSuccess = {
+              val loginEmail = "${mobile}@amfinance-login.com"
+              com.google.firebase.auth.FirebaseAuth.getInstance()
+                .signInWithEmailAndPassword(loginEmail, password)
+                .addOnCompleteListener { task ->
                   onSetBusy(false)
-                  onAuthSuccess()
-                },
-                onAuthError = { msg ->
-                  onAuthError(msg)
-                },
-                onAuthCancelled = {
-                  onSetBusy(false)
-                },
-              )
+                  if (task.isSuccessful) {
+                    onAuthSuccess()
+                  } else {
+                    onAuthError(
+                      when (task.exception) {
+                        is com.google.firebase.auth.FirebaseAuthInvalidUserException,
+                        is com.google.firebase.auth.FirebaseAuthInvalidCredentialsException ->
+                          "Login failed. Check the mobile number and password, and confirm the Firebase user exists."
+                        else -> task.exception?.localizedMessage ?: "Login failed. Please try again."
+                      }
+                    )
+                  }
+                }
             },
             enabled = !isBusy,
-            modifier = Modifier
-              .fillMaxWidth()
-              .height(54.dp)
-              .testTag("google_sign_in_button"),
+            modifier = Modifier.fillMaxWidth().height(54.dp).testTag("mobile_password_login_button"),
           ) {
             if (isBusy) {
               CircularProgressIndicator(
@@ -180,43 +179,18 @@ fun GoogleSignInScreen(
                 strokeWidth = 2.dp,
               )
               Spacer(Modifier.width(10.dp))
-              Text("Verifying Google Identity…")
+              Text("Signing in…")
             } else {
-              Icon(Icons.Default.VerifiedUser, contentDescription = null)
+              Icon(Icons.Default.Lock, contentDescription = null)
               Spacer(Modifier.width(10.dp))
-              Text(stringResource(R.string.action_sign_in_google))
+              Text("Login")
             }
           }
-
-          Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-            shape = RoundedCornerShape(10.dp),
-          ) {
-            Column(
-              modifier = Modifier.padding(12.dp),
-              verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                  imageVector = Icons.Default.CloudDone,
-                  contentDescription = null,
-                  tint = MaterialTheme.colorScheme.primary,
-                  modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                  text = "Zero-Password Firebase Authentication",
-                  style = MaterialTheme.typography.labelLarge,
-                  fontWeight = FontWeight.SemiBold,
-                )
-              }
-              Text(
-                text = "• First-time setup: Sign in with Google to initialize the Organization Owner account.\n• Staff access: Branch Managers & Collection Agents must be provisioned by the Owner using their Google email.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            }
-          }
+          Text(
+            "Testing setup: Firebase Authentication email must be mobile@amfinance-login.com.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
         }
       }
     }
