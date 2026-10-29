@@ -970,12 +970,12 @@ fun CustomerProfileScreen(
                     LoanStatusBadge(status = loan.status)
                   }
                   Text(
-                    text = "${loan.productType.displayTitle} • Principal: ${IndianFinanceFormatter.formatPaise(loan.principalPaise)} • ${loan.totalInstallments} × ${IndianFinanceFormatter.formatPaise(loan.installmentAmountPaise)}",
+                    text = "${loan.displayProductLabel} • Loan: ${IndianFinanceFormatter.formatPaise(loan.principalPaise)} • ${loan.totalInstallments} × ${IndianFinanceFormatter.formatPaise(loan.installmentAmountPaise)} = ${IndianFinanceFormatter.formatPaise(loan.totalPayablePaise)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                   )
                   Text(
-                    text = "Disbursed: ${loan.disbursementDateDdMmYyyy} (${loan.disbursementMode.displayTitle}) • Maturity: ${loan.maturityDateDdMmYyyy}" +
+                    text = "Start: ${loan.firstDueDateDdMmYyyy} • Completion: ${loan.maturityDateDdMmYyyy}" +
                       (if (loan.closedDateDdMmYyyy.isNotBlank()) " • Closed: ${loan.closedDateDdMmYyyy}" else ""),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

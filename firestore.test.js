@@ -173,6 +173,46 @@ async function seedInitializedOrg() {
       createdAt: ts,
       updatedAt: ts,
     });
+    await db.collection("loan_products").doc("prd_wk_12").set({
+      orgOwnerUid: OWNER_UID,
+      productCode: "PRD-0001",
+      name: "₹10,000 • 12 Weeks • ₹1,000 EMI",
+      principalPaise: 1000000,
+      repaymentFrequency: "WEEKLY",
+      durationCount: 12,
+      totalInstallments: 12,
+      fixedInstallmentPaise: 100000,
+      totalPayablePaise: 1200000,
+      processingFeePaise: 0,
+      isActive: true,
+      createdByUid: OWNER_UID,
+      createdDateDdMmYyyy: "26-10-2026",
+      updatedDateDdMmYyyy: "26-10-2026",
+      createdAtMillis: 1700000004000,
+      updatedAtMillis: 1700000004000,
+      createdAt: ts,
+      updatedAt: ts,
+    });
+    await db.collection("loan_products").doc("prd_dy_100").set({
+      orgOwnerUid: OWNER_UID,
+      productCode: "PRD-0002",
+      name: "₹25,000 • 100 Days • ₹280 EDI",
+      principalPaise: 2500000,
+      repaymentFrequency: "DAILY",
+      durationCount: 100,
+      totalInstallments: 100,
+      fixedInstallmentPaise: 28000,
+      totalPayablePaise: 2800000,
+      processingFeePaise: 50000,
+      isActive: true,
+      createdByUid: OWNER_UID,
+      createdDateDdMmYyyy: "26-10-2026",
+      updatedDateDdMmYyyy: "26-10-2026",
+      createdAtMillis: 1700000005000,
+      updatedAtMillis: 1700000005000,
+      createdAt: ts,
+      updatedAt: ts,
+    });
   });
 }
 
@@ -604,18 +644,21 @@ test("8. Loan Approval, Rejection, Disbursement Workflow & Closed Loan Immutabil
     branchName: "Chennai Main",
     teamId: "",
     assignedAgentName: "Arun Kumar",
+    loanProductId: "prd_dy_100",
+    loanProductCode: "PRD-0002",
+    loanProductName: "₹25,000 • 100 Days • ₹280 EDI",
     productType: "DAILY_BUSINESS_EDI",
     principalPaise: 2500000,
-    annualInterestRateBps: 1800,
+    annualInterestRateBps: 0,
     processingFeePaise: 50000,
-    totalInterestPaise: 123288,
-    totalPayablePaise: 2623288,
-    installmentAmountPaise: 26233,
+    totalInterestPaise: 300000,
+    totalPayablePaise: 2800000,
+    installmentAmountPaise: 28000,
     repaymentFrequency: "DAILY",
     totalInstallments: 100,
     paidAmountPaise: 0,
     advanceBalancePaise: 0,
-    outstandingPaise: 2623288,
+    outstandingPaise: 2800000,
     status: "PENDING_APPROVAL",
     applicationDateDdMmYyyy: "26-10-2026",
     approvedDateDdMmYyyy: "",
@@ -676,7 +719,7 @@ test("8. Loan Approval, Rejection, Disbursement Workflow & Closed Loan Immutabil
   await assertSucceeds(
     agentADb.collection("loans").doc("loan_workflow_1").update({
       status: "COMPLETED",
-      paidAmountPaise: 2623288,
+      paidAmountPaise: 2800000,
       outstandingPaise: 0,
       closedDateDdMmYyyy: "04-02-2027",
       updatedAt: ts,
@@ -1154,4 +1197,225 @@ test("10. Payment Reversal & Correction History Enforces Atomic Adjustment Recor
   await assertFails(ownerDb.collection("payment_adjustments").doc("adj_rev_001").delete());
 });
 
+test("11. Owner-Only Fixed Loan Products CRUD, Math Validation, and Employee Read Alignment", async () => {
+  await seedInitializedOrg();
+  const ts = pastTimestamp();
+  const ownerDb = testEnv.authenticatedContext(OWNER_UID).firestore();
+  const mgr1Db = testEnv.authenticatedContext(MGR_BR1_UID).firestore();
+  const agentADb = testEnv.authenticatedContext(AGENT_A_UID).firestore();
 
+  const validProduct15Wk = {
+    orgOwnerUid: OWNER_UID,
+    productCode: "PRD-0003",
+    name: "₹10,000 • 15 Weeks • ₹800 EMI",
+    principalPaise: 1000000,
+    repaymentFrequency: "WEEKLY",
+    durationCount: 15,
+    totalInstallments: 15,
+    fixedInstallmentPaise: 80000,
+    totalPayablePaise: 1200000,
+    processingFeePaise: 0,
+    isActive: true,
+    createdByUid: OWNER_UID,
+    createdDateDdMmYyyy: "28-10-2026",
+    updatedDateDdMmYyyy: "28-10-2026",
+    createdAtMillis: 1700000080000,
+    updatedAtMillis: 1700000080000,
+    createdAt: ts,
+    updatedAt: ts,
+  };
+
+  // Owner creates fixed loan product -> succeeds
+  await assertSucceeds(ownerDb.collection("loan_products").doc("prd_wk_15").set(validProduct15Wk));
+
+  // Branch Manager and Collection Agent CANNOT create, update, or delete fixed loan products
+  await assertFails(
+    mgr1Db.collection("loan_products").doc("prd_mgr_bad").set({
+      ...validProduct15Wk,
+      productCode: "PRD-BAD1",
+      createdByUid: MGR_BR1_UID,
+    })
+  );
+  await assertFails(
+    agentADb.collection("loan_products").doc("prd_wk_15").update({
+      isActive: false,
+      updatedAt: ts,
+    })
+  );
+  await assertFails(ownerDb.collection("loan_products").doc("prd_wk_15").delete());
+
+  // Invalid math (totalPayablePaise != fixedInstallmentPaise * totalInstallments) MUST fail
+  await assertFails(
+    ownerDb.collection("loan_products").doc("prd_bad_math").set({
+      ...validProduct15Wk,
+      productCode: "PRD-BAD2",
+      totalPayablePaise: 1250000,
+    })
+  );
+
+  // Invalid total (< principalPaise) MUST fail
+  await assertFails(
+    ownerDb.collection("loan_products").doc("prd_bad_loss").set({
+      ...validProduct15Wk,
+      productCode: "PRD-BAD3",
+      fixedInstallmentPaise: 50000,
+      totalPayablePaise: 750000,
+    })
+  );
+
+  // Owner, Branch Manager, and Collection Agent can get & list org loan_products
+  await assertSucceeds(ownerDb.collection("loan_products").where("orgOwnerUid", "==", OWNER_UID).get());
+  await assertSucceeds(mgr1Db.collection("loan_products").where("orgOwnerUid", "==", OWNER_UID).get());
+  await assertSucceeds(agentADb.collection("loan_products").where("orgOwnerUid", "==", OWNER_UID).get());
+});
+
+test("12. Fixed Product Enforcement on New Loans & Immutability of Existing Loans When Product Changes", async () => {
+  await seedInitializedOrg();
+  const ts = pastTimestamp();
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("customers").doc("cust_br1_a").set({
+      orgOwnerUid: OWNER_UID,
+      branchManagerUids: [MGR_BR1_UID],
+      assignedAgentUid: AGENT_A_UID,
+      createdByUid: AGENT_A_UID,
+      customerCode: "CUST-0001-TEST",
+      fullName: "Lakshmi Devi",
+      guardianName: "Murugan",
+      mobile: "9123456780",
+      alternateMobile: "",
+      address: "12 Bazaar Street",
+      city: "Chennai",
+      kycDocumentType: "AADHAAR_CARD",
+      kycDocumentNumber: "123456789012",
+      occupation: "Retail Shop",
+      monthlyIncomePaise: 3500000,
+      branchId: "br_001",
+      branchName: "Chennai Main",
+      teamId: "",
+      assignedAgentName: "Arun Kumar",
+      createdDateDdMmYyyy: "26-10-2026",
+      createdAtMillis: 1700000020000,
+      createdAt: ts,
+      updatedAt: ts,
+    });
+  });
+
+  const ownerDb = testEnv.authenticatedContext(OWNER_UID).firestore();
+  const mgr1Db = testEnv.authenticatedContext(MGR_BR1_UID).firestore();
+
+  const validFixedLoan = {
+    orgOwnerUid: OWNER_UID,
+    branchManagerUids: [MGR_BR1_UID],
+    assignedAgentUid: AGENT_A_UID,
+    createdByUid: MGR_BR1_UID,
+    approvedByUid: "",
+    rejectedByUid: "",
+    rejectionReason: "",
+    disbursedByUid: "",
+    loanCode: "LN-0012-FXD",
+    customerId: "cust_br1_a",
+    customerCode: "CUST-0001-TEST",
+    customerName: "Lakshmi Devi",
+    customerMobile: "9123456780",
+    branchId: "br_001",
+    branchName: "Chennai Main",
+    teamId: "",
+    assignedAgentName: "Arun Kumar",
+    loanProductId: "prd_wk_12",
+    loanProductCode: "PRD-0001",
+    loanProductName: "₹10,000 • 12 Weeks • ₹1,000 EMI",
+    productType: "WEEKLY_GROUP_EMI",
+    principalPaise: 1000000,
+    annualInterestRateBps: 0,
+    processingFeePaise: 0,
+    totalInterestPaise: 200000,
+    totalPayablePaise: 1200000,
+    installmentAmountPaise: 100000,
+    repaymentFrequency: "WEEKLY",
+    totalInstallments: 12,
+    paidAmountPaise: 0,
+    advanceBalancePaise: 0,
+    outstandingPaise: 1200000,
+    status: "PENDING_APPROVAL",
+    applicationDateDdMmYyyy: "28-10-2026",
+    approvedDateDdMmYyyy: "",
+    approvalRemarks: "",
+    disbursementDateDdMmYyyy: "28-10-2026",
+    disbursementMode: "CASH",
+    disbursementReference: "",
+    netDisbursedPaise: 0,
+    firstDueDateDdMmYyyy: "04-11-2026",
+    maturityDateDdMmYyyy: "20-01-2027",
+    closedDateDdMmYyyy: "",
+    createdAtMillis: 1700000090000,
+    createdAt: ts,
+    updatedAt: ts,
+  };
+
+  // Percentage-based interest bps > 0 MUST fail on new loan creation
+  await assertFails(
+    mgr1Db.collection("loans").doc("loan_pct_bad").set({
+      ...validFixedLoan,
+      annualInterestRateBps: 1800,
+    })
+  );
+
+  // Mismatched EMI against selected product MUST fail
+  await assertFails(
+    mgr1Db.collection("loans").doc("loan_mismatch_bad").set({
+      ...validFixedLoan,
+      installmentAmountPaise: 90000,
+      totalPayablePaise: 1080000,
+      totalInterestPaise: 80000,
+      outstandingPaise: 1080000,
+    })
+  );
+
+  // Valid fixed-product loan application succeeds
+  await assertSucceeds(mgr1Db.collection("loans").doc("loan_fixed_ok").set(validFixedLoan));
+
+  // Owner later edits AND deactivates prd_wk_12 (e.g. changing EMI to ₹1,050 and isActive: false)
+  await assertSucceeds(
+    ownerDb.collection("loan_products").doc("prd_wk_12").update({
+      name: "₹10,000 • 12 Weeks • ₹1,050 EMI",
+      fixedInstallmentPaise: 105000,
+      totalPayablePaise: 1260000,
+      isActive: false,
+      updatedDateDdMmYyyy: "29-10-2026",
+      updatedAtMillis: 1700000095000,
+      updatedAt: ts,
+    })
+  );
+
+  // New loan referencing deactivated product MUST fail
+  await assertFails(
+    mgr1Db.collection("loans").doc("loan_deactivated_bad").set({
+      ...validFixedLoan,
+      loanCode: "LN-0013-BAD",
+    })
+  );
+
+  // Existing loan_fixed_ok preserves its original ₹1,000 × 12 = ₹12,000 terms and can still be approved & disbursed!
+  await assertSucceeds(
+    mgr1Db.collection("loans").doc("loan_fixed_ok").update({
+      status: "APPROVED",
+      approvedByUid: MGR_BR1_UID,
+      approvedDateDdMmYyyy: "29-10-2026",
+      approvalRemarks: "Approved under original snapshotted product terms",
+      updatedAt: ts,
+    })
+  );
+  await assertSucceeds(
+    mgr1Db.collection("loans").doc("loan_fixed_ok").update({
+      status: "ACTIVE",
+      disbursedByUid: MGR_BR1_UID,
+      disbursementDateDdMmYyyy: "29-10-2026",
+      disbursementMode: "CASH",
+      disbursementReference: "",
+      netDisbursedPaise: 1000000,
+      firstDueDateDdMmYyyy: "05-11-2026",
+      maturityDateDdMmYyyy: "21-01-2027",
+      updatedAt: ts,
+    })
+  );
+});

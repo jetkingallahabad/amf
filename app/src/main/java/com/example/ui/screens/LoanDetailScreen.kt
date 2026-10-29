@@ -241,15 +241,21 @@ fun LoanDetailScreen(
               LoanStatusBadge(status = loan.status)
             }
             Text(
-              text = "${loan.productType.displayTitle} • Branch: ${loan.branchName} • Officer: ${loan.assignedAgentName}",
+              text = buildString {
+                append(loan.displayProductLabel)
+                if (loan.loanProductCode.isNotBlank()) {
+                  append(" (${loan.loanProductCode})")
+                }
+                append(" • Branch: ${loan.branchName} • Officer: ${loan.assignedAgentName}")
+              },
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             HorizontalDivider()
             SummaryMetricPair(
-              "Sanctioned Principal",
+              "Loan Amount",
               IndianFinanceFormatter.formatPaise(loan.principalPaise),
-              "Total Payable",
+              "Total Scheduled Repayment",
               IndianFinanceFormatter.formatPaise(loan.totalPayablePaise),
             )
             SummaryMetricPair(
@@ -272,17 +278,23 @@ fun LoanDetailScreen(
               IndianFinanceFormatter.formatPaise(loan.outstandingPaise),
             )
             SummaryMetricPair(
-              "Installment (${loan.repaymentFrequency.shortLabel})",
+              "Fixed ${loan.repaymentFrequency.shortLabel} × Installments",
               "${IndianFinanceFormatter.formatPaise(loan.installmentAmountPaise)} × ${loan.totalInstallments}",
               "Advance Held",
               IndianFinanceFormatter.formatPaise(loan.advanceBalancePaise),
             )
             SummaryMetricPair(
+              "Repayment Start Date",
+              loan.firstDueDateDdMmYyyy,
+              "Expected Completion Date",
+              loan.maturityDateDdMmYyyy,
+            )
+            SummaryMetricPair(
               if (isDisbursed) "Disbursed (${loan.disbursementMode.displayTitle})" else "Proposed Disbursement",
               loan.disbursementDateDdMmYyyy +
                 (if (isDisbursed && loan.disbursementReference.isNotBlank()) " • ${loan.disbursementReference}" else ""),
-              "Maturity Date",
-              loan.maturityDateDdMmYyyy,
+              "Duration",
+              loan.durationLabel,
             )
 
             // Lifecycle Action / Archive Banners

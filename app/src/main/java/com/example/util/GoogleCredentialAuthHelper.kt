@@ -10,6 +10,7 @@ import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.NoCredentialException
+import com.example.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -24,19 +25,6 @@ import kotlinx.coroutines.tasks.await
 object GoogleCredentialAuthHelper {
 
   private const val TAG = "Auth"
-
-  /** Read the generated Google OAuth client ID without requiring it at compile time.
-   * The Google Services plugin only generates this resource when OAuth is configured.
-   */
-  private fun getDefaultWebClientId(context: Context): String {
-    val resourceId = context.resources.getIdentifier(
-      "default_web_client_id",
-      "string",
-      context.packageName,
-    )
-    check(resourceId != 0) { "default_web_client_id resource is missing; configure a Web OAuth client in Firebase." }
-    return context.getString(resourceId)
-  }
 
   private fun Context.findActivity(): Activity? {
     var ctx = this
@@ -62,7 +50,7 @@ object GoogleCredentialAuthHelper {
       return
     }
     val clientId = try {
-      getDefaultWebClientId(context)
+      context.getString(R.string.default_web_client_id)
     } catch (e: Exception) {
       Log.w(TAG, "default_web_client_id unavailable during auto sign-in", e)
       onUnauthenticated()
@@ -117,7 +105,7 @@ object GoogleCredentialAuthHelper {
     onAuthCancelled: () -> Unit = {},
   ) {
     val clientId = try {
-      getDefaultWebClientId(context)
+      context.getString(R.string.default_web_client_id)
     } catch (e: Exception) {
       onAuthError("Google Sign-In configuration missing: default_web_client_id not found.")
       return

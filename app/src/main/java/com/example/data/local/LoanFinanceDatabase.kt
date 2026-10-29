@@ -83,7 +83,7 @@ class FinanceTypeConverters {
     SyncQueueEntity::class,
     AuditLogEntity::class,
   ],
-  version = 5,
+  version = 6,
   exportSchema = false,
 )
 @TypeConverters(FinanceTypeConverters::class)

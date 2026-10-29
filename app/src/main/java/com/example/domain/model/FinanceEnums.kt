@@ -294,6 +294,24 @@ object FixedLoanProductValidator {
     )
   }
 
+  fun validationErrorOrNull(
+    rawName: String = "",
+    principalPaise: Long,
+    repaymentFrequency: RepaymentFrequency,
+    durationCount: Int,
+    fixedInstallmentPaise: Long,
+    processingFeePaise: Long = 0L,
+  ): String? = runCatching {
+    validate(
+      rawName = rawName,
+      principalPaise = principalPaise,
+      repaymentFrequency = repaymentFrequency,
+      durationCount = durationCount,
+      fixedInstallmentPaise = fixedInstallmentPaise,
+      processingFeePaise = processingFeePaise,
+    )
+  }.exceptionOrNull()?.message
+
   fun buildDefaultProductName(
     principalPaise: Long,
     repaymentFrequency: RepaymentFrequency,
@@ -326,7 +344,10 @@ object LoanScheduleCalculator {
     val frequency: RepaymentFrequency,
     val repaymentStartDateDdMmYyyy: String,
     val expectedCompletionDateDdMmYyyy: String,
-  )
+  ) {
+    val netDisbursedPaise: Long
+      get() = (principalPaise - processingFeePaise).coerceAtLeast(0L)
+  }
 
   fun calculateFixedProductQuote(
     principalPaise: Long,

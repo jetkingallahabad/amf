@@ -10,6 +10,8 @@
         "headOfficeBranchId": { "type": "string", "description": "Document ID of the Head Office branch." },
         "headOfficeBranchName": { "type": "string", "description": "Name of the Head Office branch." },
         "initialized": { "type": "boolean", "description": "True once organization bootstrap completes." },
+        "ledgerEpochVersion": { "type": "integer", "description": "Active clean-start ledger epoch version." },
+        "ledgerStartedAt": { "type": "string", "format": "date-time", "description": "Server timestamp marking the active portfolio ledger epoch start." },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()." },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()." }
       },
@@ -214,9 +216,40 @@
         "uploadedByName", "uploadedDateDdMmYyyy", "createdAtMillis", "createdAt", "updatedAt"
       ]
     },
+    "LoanProduct": {
+      "title": "LoanProduct",
+      "description": "Owner-configured fixed loan product defining Loan Amount, DAILY/WEEKLY Repayment Frequency, Duration/Installments, and Fixed EMI/EDI Amount.",
+      "type": "object",
+      "properties": {
+        "orgOwnerUid": { "type": "string" },
+        "productCode": { "type": "string" },
+        "name": { "type": "string" },
+        "principalPaise": { "type": "integer" },
+        "repaymentFrequency": { "type": "string", "enum": ["DAILY", "WEEKLY"] },
+        "durationCount": { "type": "integer" },
+        "totalInstallments": { "type": "integer" },
+        "fixedInstallmentPaise": { "type": "integer" },
+        "totalPayablePaise": { "type": "integer" },
+        "processingFeePaise": { "type": "integer" },
+        "isActive": { "type": "boolean" },
+        "createdByUid": { "type": "string" },
+        "createdDateDdMmYyyy": { "type": "string" },
+        "updatedDateDdMmYyyy": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "updatedAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orgOwnerUid", "productCode", "name", "principalPaise", "repaymentFrequency",
+        "durationCount", "totalInstallments", "fixedInstallmentPaise", "totalPayablePaise",
+        "processingFeePaise", "isActive", "createdByUid", "createdDateDdMmYyyy",
+        "updatedDateDdMmYyyy", "createdAtMillis", "updatedAtMillis", "createdAt", "updatedAt"
+      ]
+    },
     "Loan": {
       "title": "Loan",
-      "description": "Loan account ledger supporting application, approval, rejection, disbursement, Daily EDI / Weekly EMI schedules, and permanent historical closure records.",
+      "description": "Loan account ledger snapshotting the selected Owner-configured fixed loan product and its fixed repayment terms.",
       "type": "object",
       "properties": {
         "orgOwnerUid": { "type": "string" },
@@ -242,6 +275,9 @@
         "branchName": { "type": "string" },
         "teamId": { "type": "string" },
         "assignedAgentName": { "type": "string" },
+        "loanProductId": { "type": "string" },
+        "loanProductCode": { "type": "string" },
+        "loanProductName": { "type": "string" },
         "productType": { "type": "string", "enum": ["DAILY_BUSINESS_EDI", "WEEKLY_GROUP_EMI", "MICRO_ENTERPRISE", "EMERGENCY_BRIDGE"] },
         "principalPaise": { "type": "integer" },
         "annualInterestRateBps": { "type": "integer" },
@@ -266,7 +302,8 @@
       "required": [
         "orgOwnerUid", "branchManagerUids", "assignedAgentUid", "createdByUid", "approvedByUid",
         "loanCode", "customerId", "customerCode", "customerName", "customerMobile",
-        "branchId", "branchName", "teamId", "assignedAgentName", "productType",
+        "branchId", "branchName", "teamId", "assignedAgentName", "loanProductId",
+        "loanProductCode", "loanProductName", "productType",
         "principalPaise", "annualInterestRateBps", "processingFeePaise", "totalInterestPaise",
         "totalPayablePaise", "installmentAmountPaise", "repaymentFrequency", "totalInstallments",
         "paidAmountPaise", "advanceBalancePaise", "outstandingPaise", "status",
@@ -489,7 +526,7 @@
         "actorName": { "type": "string" },
         "actorRole": { "type": "string", "enum": ["OWNER", "BRANCH_MANAGER", "COLLECTION_AGENT"] },
         "branchId": { "type": "string" },
-        "category": { "type": "string", "enum": ["AUTH", "EMPLOYEE", "TEAM", "CUSTOMER", "LOAN", "PAYMENT", "ADVANCE", "PRECLOSURE", "SYNC"] },
+        "category": { "type": "string", "enum": ["AUTH", "EMPLOYEE", "TEAM", "CUSTOMER", "LOAN", "LOAN_PRODUCT", "PAYMENT", "ADVANCE", "PRECLOSURE", "SYNC"] },
         "action": { "type": "string" },
         "targetType": { "type": "string" },
         "targetId": { "type": "string" },
@@ -534,9 +571,13 @@
       "schema": "CustomerDocument",
       "description": "Customer KYC document metadata and checksums."
     },
+    "/loan_products/{productId}": {
+      "schema": "LoanProduct",
+      "description": "Owner-configured fixed loan products (Loan Amount, DAILY/WEEKLY Frequency, Duration, Fixed EMI/EDI)."
+    },
     "/loans/{loanId}": {
       "schema": "Loan",
-      "description": "Loan accounts with Daily EDI and Weekly EMI repayment terms."
+      "description": "Loan accounts with snapshotted fixed loan product terms."
     },
     "/installment_schedules/{scheduleId}": {
       "schema": "InstallmentSchedule",

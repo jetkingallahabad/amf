@@ -219,6 +219,20 @@ class AuthAndOrgRepository(
         )
       }
 
+      if (orgConfig.ledgerEpochVersion < 1 && orgConfig.ownerUid == uid) {
+        try {
+          fs.collection("org_config").document("main").update(
+            mapOf(
+              "ledgerEpochVersion" to 1,
+              "ledgerStartedAt" to FieldValue.serverTimestamp(),
+              "updatedAt" to FieldValue.serverTimestamp(),
+            ),
+          ).await()
+        } catch (e: Exception) {
+          handleFirestoreError(e, OperationType.UPDATE, "org_config/main")
+        }
+      }
+
       // 2. Check existing employee profile under /employees/{uid}
       val empSnap = try {
         fs.collection("employees").document(uid).get().await()

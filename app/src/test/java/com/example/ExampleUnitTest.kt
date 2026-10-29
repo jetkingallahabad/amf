@@ -45,31 +45,65 @@ class ExampleUnitTest {
   }
 
   @Test
-  fun loanScheduleCalculator_generatesExactDailyEdiAndWeeklyEmiTotals() {
-    val dailyQuote = LoanScheduleCalculator.calculateQuote(
-      principalPaise = 10_000_00L, // ₹10,000
-      annualRatePercent = 18.25,
-      processingFeePaise = 200_00L,
-      totalInstallments = 100,
-      frequency = RepaymentFrequency.DAILY,
-      disbursementDateDdMmYyyy = "01-10-2026",
-    )
-    assertNotNull(dailyQuote)
-    val q = dailyQuote!!
-    val totalScheduled = q.installmentAmountPaise * (q.totalInstallments - 1) + q.lastInstallmentAmountPaise
-    assertEquals(q.totalPayablePaise, totalScheduled)
-    assertEquals("02-10-2026", q.firstDueDateDdMmYyyy)
-
-    val weeklyQuote = LoanScheduleCalculator.calculateQuote(
-      principalPaise = 24_000_00L,
-      annualRatePercent = 20.0,
-      processingFeePaise = 500_00L,
+  fun loanScheduleCalculator_generatesExactFixedProductWeeklyEmiAndDailyEdiTotals() {
+    // Example 1: Loan ₹10,000 • 12 weeks • Fixed Weekly EMI ₹1,000 -> Total Scheduled Repayment ₹12,000
+    val weekly12 = LoanScheduleCalculator.calculateFixedProductQuote(
+      principalPaise = 10_000_00L,
+      fixedInstallmentPaise = 1_000_00L,
       totalInstallments = 12,
       frequency = RepaymentFrequency.WEEKLY,
       disbursementDateDdMmYyyy = "01-10-2026",
     )
-    assertNotNull(weeklyQuote)
-    assertEquals("08-10-2026", weeklyQuote!!.firstDueDateDdMmYyyy)
+    assertNotNull(weekly12)
+    assertEquals(12_000_00L, weekly12!!.totalScheduledRepaymentPaise)
+    assertEquals(2_000_00L, weekly12.totalMarginPaise)
+    assertEquals("08-10-2026", weekly12.repaymentStartDateDdMmYyyy)
+    assertEquals("24-12-2026", weekly12.expectedCompletionDateDdMmYyyy)
+
+    // Example 2: Loan ₹10,000 • 15 weeks • Fixed Weekly EMI ₹800 -> Total Scheduled Repayment ₹12,000
+    val weekly15 = LoanScheduleCalculator.calculateFixedProductQuote(
+      principalPaise = 10_000_00L,
+      fixedInstallmentPaise = 800_00L,
+      totalInstallments = 15,
+      frequency = RepaymentFrequency.WEEKLY,
+      disbursementDateDdMmYyyy = "01-10-2026",
+    )
+    assertNotNull(weekly15)
+    assertEquals(12_000_00L, weekly15!!.totalScheduledRepaymentPaise)
+    assertEquals("08-10-2026", weekly15.repaymentStartDateDdMmYyyy)
+    assertEquals("14-01-2027", weekly15.expectedCompletionDateDdMmYyyy)
+
+    // Daily EDI: Loan ₹10,000 • 100 days • Fixed Daily EDI ₹120 -> Total ₹12,000
+    val daily100 = LoanScheduleCalculator.calculateFixedProductQuote(
+      principalPaise = 10_000_00L,
+      fixedInstallmentPaise = 120_00L,
+      totalInstallments = 100,
+      frequency = RepaymentFrequency.DAILY,
+      disbursementDateDdMmYyyy = "01-10-2026",
+      processingFeePaise = 200_00L,
+    )
+    assertNotNull(daily100)
+    assertEquals(12_000_00L, daily100!!.totalScheduledRepaymentPaise)
+    assertEquals(9_800_00L, daily100.netDisbursedPaise)
+    assertEquals("02-10-2026", daily100.repaymentStartDateDdMmYyyy)
+
+    // Validator rejects totalScheduledRepayment < principalPaise or invalid duration
+    assertNull(
+      com.example.domain.model.FixedLoanProductValidator.validationErrorOrNull(
+        principalPaise = 10_000_00L,
+        repaymentFrequency = RepaymentFrequency.WEEKLY,
+        durationCount = 12,
+        fixedInstallmentPaise = 1_000_00L,
+      ),
+    )
+    assertNotNull(
+      com.example.domain.model.FixedLoanProductValidator.validationErrorOrNull(
+        principalPaise = 10_000_00L,
+        repaymentFrequency = RepaymentFrequency.WEEKLY,
+        durationCount = 12,
+        fixedInstallmentPaise = 500_00L, // ₹6,000 < ₹10,000 -> must fail
+      ),
+    )
   }
 
   @Test

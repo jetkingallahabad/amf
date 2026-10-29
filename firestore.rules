@@ -104,12 +104,14 @@ service cloud.firestore {
 
     function isValidOrgConfig(data) {
       return data.keys().hasAll(['orgName', 'ownerUid', 'headOfficeBranchId', 'headOfficeBranchName', 'initialized', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['orgName', 'ownerUid', 'headOfficeBranchId', 'headOfficeBranchName', 'initialized', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['orgName', 'ownerUid', 'headOfficeBranchId', 'headOfficeBranchName', 'initialized', 'ledgerEpochVersion', 'ledgerStartedAt', 'createdAt', 'updatedAt']) &&
              isBoundedString(data.orgName, 2, 120) &&
              isValidId(data.ownerUid) &&
              isValidId(data.headOfficeBranchId) &&
              isBoundedString(data.headOfficeBranchName, 2, 120) &&
              data.initialized is bool &&
+             (!('ledgerEpochVersion' in data) || (data.ledgerEpochVersion is int && data.ledgerEpochVersion >= 0)) &&
+             (!('ledgerStartedAt' in data) || isValidServerTimestamp(data.ledgerStartedAt)) &&
              data.createdAt is timestamp &&
              isValidServerTimestamp(data.updatedAt);
     }
@@ -359,8 +361,48 @@ service cloud.firestore {
       return val is int && val >= 0;
     }
 
+    function isValidLoanProduct(data) {
+      return data.keys().hasAll([
+               'orgOwnerUid', 'productCode', 'name', 'principalPaise', 'repaymentFrequency',
+               'durationCount', 'totalInstallments', 'fixedInstallmentPaise', 'totalPayablePaise',
+               'processingFeePaise', 'isActive', 'createdByUid', 'createdDateDdMmYyyy',
+               'updatedDateDdMmYyyy', 'createdAtMillis', 'updatedAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'orgOwnerUid', 'productCode', 'name', 'principalPaise', 'repaymentFrequency',
+               'durationCount', 'totalInstallments', 'fixedInstallmentPaise', 'totalPayablePaise',
+               'processingFeePaise', 'isActive', 'createdByUid', 'createdDateDdMmYyyy',
+               'updatedDateDdMmYyyy', 'createdAtMillis', 'updatedAtMillis', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.orgOwnerUid) &&
+             isValidId(data.productCode) &&
+             isBoundedString(data.name, 3, 120) &&
+             data.principalPaise is int && data.principalPaise >= 10000 && data.principalPaise <= 500000000 &&
+             data.repaymentFrequency in ['DAILY', 'WEEKLY'] &&
+             data.durationCount is int && data.durationCount >= 1 && data.durationCount <= 1000 &&
+             data.totalInstallments is int && data.totalInstallments == data.durationCount &&
+             data.fixedInstallmentPaise is int && data.fixedInstallmentPaise > 0 &&
+             data.totalPayablePaise is int &&
+             data.totalPayablePaise == data.fixedInstallmentPaise * data.totalInstallments &&
+             data.totalPayablePaise >= data.principalPaise &&
+             data.processingFeePaise is int && data.processingFeePaise >= 0 && data.processingFeePaise < data.principalPaise &&
+             data.isActive is bool &&
+             isValidId(data.createdByUid) &&
+             isDateStr(data.createdDateDdMmYyyy) &&
+             isDateStr(data.updatedDateDdMmYyyy) &&
+             isNonNegInt(data.createdAtMillis) &&
+             isNonNegInt(data.updatedAtMillis) &&
+             data.createdAt is timestamp &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
     function isValidLoanMutable(data) {
-      return data.size() == 43 &&
+      return (data.size() == 43 || (
+               data.size() == 46 &&
+               isValidId(data.loanProductId) &&
+               isReqStr(data.loanProductCode, 64) &&
+               isBoundedString(data.loanProductName, 3, 120)
+             )) &&
              data.branchManagerUids is list && data.branchManagerUids.size() <= 20 &&
              isReqStr(data.assignedAgentUid, 128) &&
              isReqStr(data.assignedAgentName, 100) &&
@@ -398,16 +440,34 @@ service cloud.firestore {
              isReqStr(data.branchName, 120) &&
              data.productType in ['DAILY_BUSINESS_EDI', 'WEEKLY_GROUP_EMI', 'MICRO_ENTERPRISE', 'EMERGENCY_BRIDGE'] &&
              data.principalPaise is int && data.principalPaise > 0 &&
-             isNonNegInt(data.annualInterestRateBps) &&
+             data.annualInterestRateBps == 0 &&
              isNonNegInt(data.processingFeePaise) &&
              isNonNegInt(data.totalInterestPaise) &&
              data.totalPayablePaise is int && data.totalPayablePaise >= data.principalPaise &&
              data.installmentAmountPaise is int && data.installmentAmountPaise > 0 &&
              data.repaymentFrequency in ['DAILY', 'WEEKLY'] &&
              data.totalInstallments is int && data.totalInstallments >= 1 && data.totalInstallments <= 1000 &&
+             data.totalPayablePaise == data.installmentAmountPaise * data.totalInstallments &&
+             data.totalInterestPaise == data.totalPayablePaise - data.principalPaise &&
              isDateStr(data.applicationDateDdMmYyyy) &&
              isNonNegInt(data.createdAtMillis) &&
              data.createdAt is timestamp;
+    }
+
+    function matchesActiveLoanProduct(d) {
+      let prodPath = /databases/$(database)/documents/loan_products/$(d.loanProductId);
+      let prod = get(prodPath).data;
+      return d.size() == 46 &&
+             exists(prodPath) &&
+             prod.orgOwnerUid == d.orgOwnerUid &&
+             prod.isActive == true &&
+             d.loanProductCode == prod.productCode &&
+             d.loanProductName == prod.name &&
+             d.principalPaise == prod.principalPaise &&
+             d.repaymentFrequency == prod.repaymentFrequency &&
+             d.totalInstallments == prod.totalInstallments &&
+             d.installmentAmountPaise == prod.fixedInstallmentPaise &&
+             d.totalPayablePaise == prod.totalPayablePaise;
     }
 
     function canCreateLoanDoc(loanId) {
@@ -423,6 +483,7 @@ service cloud.firestore {
              (d.status == 'PENDING_APPROVAL' ||
               (d.status in ['APPROVED', 'ACTIVE'] && (emp.role == 'OWNER' || emp.canApproveLoan == true))) &&
              isValidLoan(d) &&
+             matchesActiveLoanProduct(d) &&
              isValidServerTimestamp(d.createdAt) &&
              exists(/databases/$(database)/documents/customers/$(d.customerId));
     }
@@ -816,7 +877,7 @@ service cloud.firestore {
              isBoundedString(data.actorName, 1, 100) &&
              data.actorRole in ['OWNER', 'BRANCH_MANAGER', 'COLLECTION_AGENT'] &&
              isValidId(data.branchId) &&
-             data.category in ['AUTH', 'EMPLOYEE', 'TEAM', 'CUSTOMER', 'LOAN', 'PAYMENT', 'ADVANCE', 'PRECLOSURE', 'SYNC'] &&
+             data.category in ['AUTH', 'EMPLOYEE', 'TEAM', 'CUSTOMER', 'LOAN', 'LOAN_PRODUCT', 'PAYMENT', 'ADVANCE', 'PRECLOSURE', 'SYNC'] &&
              isBoundedString(data.action, 2, 80) &&
              isBoundedString(data.targetType, 2, 60) &&
              isBoundedString(data.targetId, 1, 128) &&
@@ -849,7 +910,7 @@ service cloud.firestore {
                        incoming().headOfficeBranchId == existing().headOfficeBranchId &&
                        incoming().initialized == existing().initialized &&
                        incoming().createdAt == existing().createdAt &&
-                       incoming().diff(existing()).affectedKeys().hasOnly(['orgName', 'headOfficeBranchName', 'updatedAt']);
+                       incoming().diff(existing()).affectedKeys().hasOnly(['orgName', 'headOfficeBranchName', 'ledgerEpochVersion', 'ledgerStartedAt', 'updatedAt']);
 
       allow delete: if false;
     }
@@ -1151,6 +1212,50 @@ service cloud.firestore {
                        incoming().createdAt == existing().createdAt &&
                        incoming().sha256Checksum == existing().sha256Checksum &&
                        incoming().diff(existing()).affectedKeys().hasOnly(['branchManagerUids', 'updatedAt']);
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 7b. /loan_products/{productId} (STRICT OWNER-ONLY CONFIGURATION)
+    // =========================================================================
+    match /loan_products/{productId} {
+      allow get: if isSignedIn() &&
+                    isValidId(productId) && (
+                      existing().orgOwnerUid == request.auth.uid ||
+                      (isActiveEmployee() && existing().orgOwnerUid == callerEmp().orgOwnerUid)
+                    );
+
+      allow list: if isSignedIn() && (
+                     resource.data.orgOwnerUid == request.auth.uid ||
+                     (isActiveEmployee() && resource.data.orgOwnerUid == callerEmp().orgOwnerUid)
+                   );
+
+      allow create: if isSignedIn() &&
+                       isValidId(productId) &&
+                       isValidLoanProduct(incoming()) &&
+                       isValidServerTimestamp(incoming().createdAt) &&
+                       incoming().createdByUid == request.auth.uid &&
+                       isActiveOwner() &&
+                       incoming().orgOwnerUid == callerEmp().orgOwnerUid;
+
+      allow update: if isSignedIn() &&
+                       isValidId(productId) &&
+                       isValidLoanProduct(incoming()) &&
+                       isActiveOwner() &&
+                       callerEmp().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().orgOwnerUid == existing().orgOwnerUid &&
+                       incoming().productCode == existing().productCode &&
+                       incoming().createdByUid == existing().createdByUid &&
+                       incoming().createdDateDdMmYyyy == existing().createdDateDdMmYyyy &&
+                       incoming().createdAtMillis == existing().createdAtMillis &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'name', 'principalPaise', 'repaymentFrequency', 'durationCount',
+                         'totalInstallments', 'fixedInstallmentPaise', 'totalPayablePaise',
+                         'processingFeePaise', 'isActive', 'updatedDateDdMmYyyy',
+                         'updatedAtMillis', 'updatedAt'
+                       ]);
 
       allow delete: if false;
     }

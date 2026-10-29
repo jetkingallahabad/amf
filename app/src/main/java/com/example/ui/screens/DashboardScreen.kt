@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.EventRepeat
 import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HistoryEdu
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.RequestQuote
@@ -75,6 +76,7 @@ fun RoleBasedDashboardScreen(
   onNavigateSearch: () -> Unit,
   onNavigateRegisterCustomer: () -> Unit,
   onNavigateNewLoan: () -> Unit,
+  onNavigateLoanProducts: () -> Unit = {},
   onNavigateSchedules: () -> Unit,
   onNavigateLoanDetail: (String) -> Unit,
   onNavigateEmployees: () -> Unit,
@@ -122,6 +124,7 @@ fun RoleBasedDashboardScreen(
         onSearch = onNavigateSearch,
         onRegisterCustomer = onNavigateRegisterCustomer,
         onNewLoan = onNavigateNewLoan,
+        onLoanProducts = onNavigateLoanProducts,
         onSchedules = onNavigateSchedules,
         onEmployees = onNavigateEmployees,
         onTeams = onNavigateTeams,
@@ -539,6 +542,7 @@ private fun RoleQuickActionsGrid(
   onSearch: () -> Unit,
   onRegisterCustomer: () -> Unit,
   onNewLoan: () -> Unit,
+  onLoanProducts: () -> Unit,
   onSchedules: () -> Unit,
   onEmployees: () -> Unit,
   onTeams: () -> Unit,
@@ -583,6 +587,13 @@ private fun RoleQuickActionsGrid(
       ) {
         if (actor.role == UserRole.OWNER) {
           QuickActionButton(
+            label = "Loan Products",
+            icon = Icons.Default.Inventory2,
+            onClick = onLoanProducts,
+            tag = "quick_action_loan_products",
+            modifier = Modifier.weight(1f),
+          )
+          QuickActionButton(
             label = "Employees",
             icon = Icons.Default.Badge,
             onClick = onEmployees,
@@ -598,8 +609,7 @@ private fun RoleQuickActionsGrid(
             tag = "quick_action_teams",
             modifier = Modifier.weight(1f),
           )
-        }
-        if (actor.role == UserRole.OWNER || actor.canViewAuditLogs) {
+        } else if (actor.canViewAuditLogs) {
           QuickActionButton(
             label = "Audit Logs",
             icon = Icons.Default.HistoryEdu,

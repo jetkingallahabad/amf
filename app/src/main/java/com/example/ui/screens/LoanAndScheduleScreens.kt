@@ -13,16 +13,20 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.EventRepeat
-import androidx.compose.material3.AssistChip
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -36,16 +40,21 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -54,13 +63,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.local.CustomerEntity
 import com.example.data.local.EmployeeEntity
 import com.example.data.local.InstallmentScheduleEntity
+import com.example.data.local.LoanProductEntity
 import com.example.domain.model.InstallmentStatus
-import com.example.domain.model.LoanProductType
 import com.example.domain.model.LoanScheduleCalculator
 import com.example.domain.model.PaymentMode
 import com.example.domain.model.RepaymentFrequency
@@ -78,17 +86,16 @@ fun NewLoanApplicationScreen(
   actor: EmployeeEntity,
   customers: List<CustomerEntity>,
   employees: List<EmployeeEntity>,
+  activeProducts: List<LoanProductEntity>,
   preselectedCustomerId: String?,
   isSaving: Boolean = false,
   onBack: () -> Unit,
+  onRegisterNewCustomer: () -> Unit,
+  onOpenLoanProducts: () -> Unit,
+  onSeedStandardProducts: () -> Unit = {},
   onSubmitLoan: (
     customerId: String,
-    productType: LoanProductType,
-    principalPaise: Long,
-    fixedInstallmentPaise: Long,
-    processingFeePaise: Long,
-    frequency: RepaymentFrequency,
-    totalInstallments: Int,
+    loanProductId: String,
     disbursementDateDdMmYyyy: String,
     assignedAgentId: String,
     disburseImmediately: Boolean,
@@ -98,17 +105,71 @@ fun NewLoanApplicationScreen(
 ) {
   BackHandler(onBack = onBack)
 
-  var selectedCustomerId by rememberSaveable {
+  val isOwner = actor.role == UserRole.OWNER
+  val canRegisterCustomer = isOwner || actor.canRegisterCustomer
+  val canApprove = isOwner || actor.canApproveLoan
+
+  var selectedCustomerId by rememberSaveable(preselectedCustomerId) {
     mutableStateOf(preselectedCustomerId ?: customers.firstOrNull()?.id.orEmpty())
   }
-  var productType by rememberSaveable { mutableStateOf(LoanProductType.DAILY_BUSINESS_EDI) }
-  var frequency by rememberSaveable { mutableStateOf(RepaymentFrequency.DAILY) }
-  var principalRupees by rememberSaveable { mutableStateOf("5000") }
-  var fixedInstallmentRupees by rememberSaveable { mutableStateOf("100") }
-  var processingFeeRupees by rememberSaveable { mutableStateOf("0") }
-  var installmentsStr by rememberSaveable { mutableStateOf("60") }
+  LaunchedEffect(customers, preselectedCustomerId) {
+    if (!preselectedCustomerId.isNullOrBlank() && customers.any { it.id == preselectedCustomerId }) {
+      selectedCustomerId = preselectedCustomerId
+    } else if (selectedCustomerId.isBlank() && customers.isNotEmpty()) {
+      selectedCustomerId = customers.first().id
+    }
+  }
+
+  val availablePrincipals = remember(activeProducts) {
+    activeProducts.map { it.principalPaise }.distinct().sorted()
+  }
+
+  var selectedPrincipalPaise by rememberSaveable {
+    mutableLongStateOf(availablePrincipals.firstOrNull() ?: 0L)
+  }
+  var frequency by rememberSaveable {
+    mutableStateOf(activeProducts.firstOrNull()?.repaymentFrequency ?: RepaymentFrequency.WEEKLY)
+  }
+  var selectedProductId by rememberSaveable {
+    mutableStateOf(activeProducts.firstOrNull()?.id.orEmpty())
+  }
+
+  // Keep selections synchronized as activeProducts stream arrives or changes
+  LaunchedEffect(activeProducts) {
+    if (activeProducts.isNotEmpty()) {
+      if (selectedPrincipalPaise !in availablePrincipals) {
+        selectedPrincipalPaise = availablePrincipals.first()
+      }
+      val forPrincipalAndFreq = activeProducts.filter {
+        it.principalPaise == selectedPrincipalPaise && it.repaymentFrequency == frequency
+      }
+      if (forPrincipalAndFreq.isEmpty()) {
+        val firstForPrincipal = activeProducts.firstOrNull { it.principalPaise == selectedPrincipalPaise }
+        if (firstForPrincipal != null) {
+          frequency = firstForPrincipal.repaymentFrequency
+          selectedProductId = firstForPrincipal.id
+        } else {
+          val firstAny = activeProducts.first()
+          selectedPrincipalPaise = firstAny.principalPaise
+          frequency = firstAny.repaymentFrequency
+          selectedProductId = firstAny.id
+        }
+      } else if (forPrincipalAndFreq.none { it.id == selectedProductId }) {
+        selectedProductId = forPrincipalAndFreq.minBy { it.durationCount }.id
+      }
+    }
+  }
+
+  val matchingDurationProducts = remember(activeProducts, selectedPrincipalPaise, frequency) {
+    activeProducts
+      .filter { it.principalPaise == selectedPrincipalPaise && it.repaymentFrequency == frequency }
+      .sortedWith(compareBy<LoanProductEntity> { it.durationCount }.thenBy { it.fixedInstallmentPaise })
+  }
+
+  val selectedProduct = matchingDurationProducts.find { it.id == selectedProductId }
+    ?: matchingDurationProducts.firstOrNull()
+
   var disbursementDate by rememberSaveable { mutableStateOf(IndianFinanceFormatter.todayDdMmYyyy()) }
-  val canApprove = actor.role == UserRole.OWNER || actor.canApproveLoan
   var disburseImmediately by rememberSaveable { mutableStateOf(canApprove) }
   var disbursementMode by rememberSaveable { mutableStateOf(PaymentMode.CASH) }
   var disbursementReference by rememberSaveable { mutableStateOf("") }
@@ -119,29 +180,24 @@ fun NewLoanApplicationScreen(
   }
 
   var custDropdownExpanded by remember { mutableStateOf(false) }
-  var prodDropdownExpanded by remember { mutableStateOf(false) }
   var agentDropdownExpanded by remember { mutableStateOf(false) }
   var disbModeDropdownExpanded by remember { mutableStateOf(false) }
 
-  val principalPaise = IndianFinanceFormatter.parseRupeesToPaise(principalRupees) ?: 0L
-  val feePaise = IndianFinanceFormatter.parseRupeesToPaise(processingFeeRupees) ?: 0L
-  val fixedInstallmentPaise = IndianFinanceFormatter.parseRupeesToPaise(fixedInstallmentRupees) ?: 0L
-  val tenureInt = installmentsStr.toIntOrNull() ?: 0
-
-  val liveQuote = LoanScheduleCalculator.calculateFixedProductQuote(
-    principalPaise = principalPaise,
-    fixedInstallmentPaise = fixedInstallmentPaise,
-    processingFeePaise = feePaise,
-    totalInstallments = tenureInt,
-    frequency = frequency,
-    disbursementDateDdMmYyyy = disbursementDate,
-  )
+  val liveQuote = selectedProduct?.let { prod ->
+    LoanScheduleCalculator.calculateFixedProductQuote(
+      principalPaise = prod.principalPaise,
+      fixedInstallmentPaise = prod.fixedInstallmentPaise,
+      totalInstallments = prod.totalInstallments,
+      frequency = prod.repaymentFrequency,
+      disbursementDateDdMmYyyy = disbursementDate,
+      processingFeePaise = prod.processingFeePaise,
+    )
+  }
 
   val validationError = when {
-    principalPaise !in 10_000L..500_000_000L -> "Principal must be between ₹100 and ₹50,00,000."
-    fixedInstallmentPaise <= 0L -> "Fixed EMI/EDI amount must be greater than ₹0."
-    feePaise < 0L || feePaise >= principalPaise -> "Processing fee must be non-negative and less than principal."
-    tenureInt !in 1..1000 -> "Tenure must be between 1 and 1,000 installments."
+    selectedCustomer == null -> "Select an existing customer or register a new customer."
+    activeProducts.isEmpty() -> "No active Fixed Loan Products configured yet."
+    selectedProduct == null -> "No active ${frequency.displayTitle} product configured for ${IndianFinanceFormatter.formatPaise(selectedPrincipalPaise)}."
     liveQuote == null -> "Enter a valid disbursement date in DD-MM-YYYY format."
     canApprove && disburseImmediately && disbursementMode != PaymentMode.CASH && disbursementReference.trim().isEmpty() ->
       "UTR / Cheque / Reference number is required for ${disbursementMode.displayTitle} disbursement."
@@ -157,176 +213,325 @@ fun NewLoanApplicationScreen(
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
           }
         },
+        actions = {
+          if (isOwner) {
+            TextButton(
+              onClick = onOpenLoanProducts,
+              modifier = Modifier.testTag("manage_products_topbar_btn"),
+            ) {
+              Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.width(4.dp))
+              Text("Products")
+            }
+          }
+        },
       )
     },
   ) { innerPadding ->
     Column(
-      verticalArrangement = Arrangement.spacedBy(12.dp),
+      verticalArrangement = Arrangement.spacedBy(14.dp),
       modifier = Modifier
         .fillMaxSize()
         .padding(innerPadding)
         .verticalScroll(rememberScrollState())
         .padding(16.dp),
     ) {
-      if (customers.isEmpty()) {
-        EmptyLedgerState(
-          icon = Icons.Default.EventRepeat,
-          title = "Register a Customer First",
-          subtitle = "At least one registered customer is required before creating a loan application.",
-        )
+      // STEP 1: Select an existing customer OR register a new customer
+      Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Column(
+          modifier = Modifier.padding(14.dp),
+          verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          Row(
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(
+              text = "1. Applicant Customer",
+              style = MaterialTheme.typography.titleSmall,
+              fontWeight = FontWeight.Bold,
+            )
+            if (canRegisterCustomer) {
+              OutlinedButton(
+                onClick = onRegisterNewCustomer,
+                modifier = Modifier
+                  .height(48.dp)
+                  .testTag("register_customer_from_loan_btn"),
+              ) {
+                Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Register New")
+              }
+            }
+          }
+
+          if (customers.isEmpty()) {
+            Text(
+              text = "No customers registered yet. Tap 'Register New' to add a customer and return directly to this loan form.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          } else {
+            ExposedDropdownMenuBox(
+              expanded = custDropdownExpanded,
+              onExpandedChange = { custDropdownExpanded = !custDropdownExpanded },
+            ) {
+              OutlinedTextField(
+                value = selectedCustomer?.let { "${it.fullName} (${it.customerCode} • ${it.mobile})" } ?: "Select Customer",
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Select Existing Customer *") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = custDropdownExpanded) },
+                modifier = Modifier
+                  .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                  .fillMaxWidth()
+                  .testTag("loan_customer_selector"),
+              )
+              ExposedDropdownMenu(
+                expanded = custDropdownExpanded,
+                onDismissRequest = { custDropdownExpanded = false },
+              ) {
+                customers.forEach { c ->
+                  DropdownMenuItem(
+                    text = { Text("${c.fullName} (${c.customerCode} • +91 ${c.mobile})") },
+                    onClick = {
+                      selectedCustomerId = c.id
+                      custDropdownExpanded = false
+                    },
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Guard if no Fixed Loan Products have been configured yet
+      if (activeProducts.isEmpty()) {
+        Card(
+          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            EmptyLedgerState(
+              icon = Icons.Default.Inventory2,
+              title = "No Active Fixed Loan Products",
+              subtitle = if (isOwner) {
+                "Configure fixed Loan Amounts, DAILY/WEEKLY schedules, Durations, and Fixed EMI/EDI amounts before creating loans."
+              } else {
+                "Ask the Organization Owner to configure active Fixed Loan Products before submitting new loan applications."
+              },
+            )
+            if (isOwner) {
+              Button(
+                onClick = onOpenLoanProducts,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .height(48.dp)
+                  .testTag("open_loan_products_empty_btn"),
+              ) {
+                Icon(Icons.Default.Inventory2, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Configure Fixed Loan Products")
+              }
+              OutlinedButton(
+                onClick = onSeedStandardProducts,
+                enabled = !isSaving,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .height(48.dp)
+                  .testTag("seed_products_from_new_loan_btn"),
+              ) {
+                Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (isSaving) "Configuring Products…" else "Load Standard Fixed Products (₹10k / ₹25k / ₹50k)")
+              }
+            }
+          }
+        }
         return@Column
       }
 
-      // Customer Selector
-      ExposedDropdownMenuBox(
-        expanded = custDropdownExpanded,
-        onExpandedChange = { custDropdownExpanded = !custDropdownExpanded },
+      // STEP 2: Select a configured Loan Amount
+      Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth(),
       ) {
-        OutlinedTextField(
-          value = selectedCustomer?.let { "${it.fullName} (${it.customerCode} • ${it.mobile})" } ?: "Select Customer",
-          onValueChange = {},
-          readOnly = true,
-          label = { Text("Applicant Customer *") },
-          trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = custDropdownExpanded) },
-          modifier = Modifier
-            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-            .fillMaxWidth()
-            .testTag("loan_customer_selector"),
-        )
-        ExposedDropdownMenu(
-          expanded = custDropdownExpanded,
-          onDismissRequest = { custDropdownExpanded = false },
+        Column(
+          modifier = Modifier.padding(14.dp),
+          verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-          customers.forEach { c ->
-            DropdownMenuItem(
-              text = { Text("${c.fullName} (${c.customerCode} • +91 ${c.mobile})") },
-              onClick = {
-                selectedCustomerId = c.id
-                custDropdownExpanded = false
-              },
-            )
-          }
-        }
-      }
-
-      // Repayment Frequency: Daily EDI vs Weekly EMI
-      Text("Repayment Schedule Frequency", style = MaterialTheme.typography.labelLarge)
-      SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-        RepaymentFrequency.entries.forEachIndexed { idx, freq ->
-          SegmentedButton(
-            selected = frequency == freq,
-            onClick = {
-              frequency = freq
-              installmentsStr = if (freq == RepaymentFrequency.DAILY) "60" else "12"
-              fixedInstallmentRupees = if (freq == RepaymentFrequency.DAILY) "100" else "500"
-            },
-            shape = SegmentedButtonDefaults.itemShape(index = idx, count = RepaymentFrequency.entries.size),
-            modifier = Modifier.testTag("freq_btn_${freq.name.lowercase()}"),
-          ) {
-            Text(freq.displayTitle)
-          }
-        }
-      }
-
-      // Loan Product Selector
-      ExposedDropdownMenuBox(
-        expanded = prodDropdownExpanded,
-        onExpandedChange = { prodDropdownExpanded = !prodDropdownExpanded },
-      ) {
-        OutlinedTextField(
-          value = productType.displayTitle,
-          onValueChange = {},
-          readOnly = true,
-          label = { Text("Loan Scheme / Product") },
-          trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = prodDropdownExpanded) },
-          modifier = Modifier
-            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-            .fillMaxWidth(),
-        )
-        ExposedDropdownMenu(
-          expanded = prodDropdownExpanded,
-          onDismissRequest = { prodDropdownExpanded = false },
-        ) {
-          LoanProductType.entries.forEach { pt ->
-            DropdownMenuItem(
-              text = { Text(pt.displayTitle) },
-              onClick = {
-                productType = pt
-                prodDropdownExpanded = false
-              },
-            )
-          }
-        }
-      }
-
-      Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedTextField(
-          value = principalRupees,
-          onValueChange = { principalRupees = it },
-          label = { Text("Principal (₹) *") },
-          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-          singleLine = true,
-          modifier = Modifier
-            .weight(1.2f)
-            .testTag("loan_principal_input"),
-        )
-        OutlinedTextField(
-          value = fixedInstallmentRupees,
-          onValueChange = { fixedInstallmentRupees = it.filter { ch -> ch.isDigit() || ch == '.' } },
-          label = { Text("Fixed EMI/EDI (₹) *") },
-          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-          singleLine = true,
-          modifier = Modifier
-            .weight(0.8f)
-            .testTag("loan_fixed_installment_input"),
-        )
-      }
-
-      Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedTextField(
-          value = installmentsStr,
-          onValueChange = { installmentsStr = it.filter { ch -> ch.isDigit() } },
-          label = {
-            Text(
-              if (frequency == RepaymentFrequency.DAILY) "Tenure (Days / EDIs)" else "Tenure (Weeks / EMIs)",
-            )
-          },
-          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-          singleLine = true,
-          modifier = Modifier
-            .weight(1f)
-            .testTag("loan_tenure_input"),
-        )
-        OutlinedTextField(
-          value = processingFeeRupees,
-          onValueChange = { processingFeeRupees = it },
-          label = { Text("Processing Fee (₹)") },
-          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-          singleLine = true,
-          modifier = Modifier.weight(1f),
-        )
-      }
-
-      // Quick Tenure Presets
-      Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.horizontalScroll(rememberScrollState()),
-      ) {
-        val presets = if (frequency == RepaymentFrequency.DAILY) {
-          listOf("30", "60", "90", "100", "120")
-        } else {
-          listOf("12", "15", "16", "24", "36", "52")
-        }
-        presets.forEach { preset ->
-          AssistChip(
-            onClick = { installmentsStr = preset },
-            label = {
-              Text("$preset ${if (frequency == RepaymentFrequency.DAILY) "Days" else "Weeks"}")
-            },
+          Text(
+            text = "2. Select Configured Loan Amount",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
           )
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .horizontalScroll(rememberScrollState()),
+          ) {
+            availablePrincipals.forEach { principalPaise ->
+              val isSelected = selectedPrincipalPaise == principalPaise
+              FilterChip(
+                selected = isSelected,
+                onClick = {
+                  selectedPrincipalPaise = principalPaise
+                  val matchingForFreq = activeProducts.filter {
+                    it.principalPaise == principalPaise && it.repaymentFrequency == frequency
+                  }
+                  if (matchingForFreq.isNotEmpty()) {
+                    selectedProductId = matchingForFreq.minBy { it.durationCount }.id
+                  } else {
+                    val fallback = activeProducts.firstOrNull { it.principalPaise == principalPaise }
+                    if (fallback != null) {
+                      frequency = fallback.repaymentFrequency
+                      selectedProductId = fallback.id
+                    }
+                  }
+                },
+                label = {
+                  Text(
+                    text = IndianFinanceFormatter.formatPaise(principalPaise),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = MonoFontFamily),
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                  )
+                },
+                modifier = Modifier.testTag("loan_amount_option_$principalPaise"),
+              )
+            }
+          }
+
+          // STEP 3: Select DAILY or WEEKLY repayment
+          Text(
+            text = "3. Select Repayment Frequency",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+          )
+          SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            RepaymentFrequency.entries.forEachIndexed { idx, freq ->
+              val hasForSelectedAmount = activeProducts.any {
+                it.principalPaise == selectedPrincipalPaise && it.repaymentFrequency == freq
+              }
+              SegmentedButton(
+                selected = frequency == freq,
+                onClick = {
+                  frequency = freq
+                  val forCurrentPrincipal = activeProducts.filter {
+                    it.principalPaise == selectedPrincipalPaise && it.repaymentFrequency == freq
+                  }
+                  if (forCurrentPrincipal.isNotEmpty()) {
+                    selectedProductId = forCurrentPrincipal.minBy { it.durationCount }.id
+                  } else {
+                    val otherWithFreq = activeProducts.firstOrNull { it.repaymentFrequency == freq }
+                    if (otherWithFreq != null) {
+                      selectedPrincipalPaise = otherWithFreq.principalPaise
+                      selectedProductId = otherWithFreq.id
+                    }
+                  }
+                },
+                shape = SegmentedButtonDefaults.itemShape(index = idx, count = RepaymentFrequency.entries.size),
+                modifier = Modifier.testTag("freq_btn_${freq.name.lowercase()}"),
+              ) {
+                Text(
+                  text = if (hasForSelectedAmount) freq.displayTitle else "${freq.displayTitle} (Other Amt)",
+                  maxLines = 1,
+                )
+              }
+            }
+          }
+
+          // STEP 4: Select an available Loan Duration
+          Text(
+            text = "4. Select Available Loan Duration",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+          )
+          if (matchingDurationProducts.isEmpty()) {
+            Text(
+              text = "No active ${frequency.displayTitle} duration configured for ${IndianFinanceFormatter.formatPaise(selectedPrincipalPaise)}.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.error,
+            )
+          } else {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              matchingDurationProducts.forEach { prod ->
+                val isSelected = selectedProduct?.id == prod.id
+                Card(
+                  colors = CardDefaults.cardColors(
+                    containerColor = if (isSelected) {
+                      MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                    } else {
+                      MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                    },
+                  ),
+                  border = BorderStroke(
+                    width = if (isSelected) 2.dp else 1.dp,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                  ),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { selectedProductId = prod.id }
+                    .testTag("loan_duration_option_${prod.id}"),
+                ) {
+                  Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 14.dp, vertical = 12.dp),
+                  ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                      Text(
+                        text = prod.durationLabel,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                      )
+                      Text(
+                        text = "${prod.name} (${prod.productCode})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      )
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                      Text(
+                        text = "Fixed ${prod.repaymentFrequency.shortLabel}: ${IndianFinanceFormatter.formatPaise(prod.fixedInstallmentPaise)}",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = MonoFontFamily),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                      )
+                      Text(
+                        text = "Total: ${IndianFinanceFormatter.formatPaise(prod.totalPayablePaise)}",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
+                      )
+                    }
+                    if (isSelected) {
+                      Spacer(Modifier.width(8.dp))
+                      Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = "Selected Duration",
+                        tint = MaterialTheme.colorScheme.primary,
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
 
+      // Disbursement Reference Date & Assigned Agent
       DdMmYyyyDateField(
         label = if (canApprove && disburseImmediately) "Disbursement Date" else "Proposed Disbursement Date",
         value = disbursementDate,
@@ -335,7 +540,6 @@ fun NewLoanApplicationScreen(
         testTagName = "loan_disbursement_date_input",
       )
 
-      // Assigned Agent Selector
       val availableAgents = employees.filter {
         it.isActive && (selectedCustomer == null || it.branchId == selectedCustomer.branchId)
       }.ifEmpty { listOf(actor) }
@@ -390,9 +594,9 @@ fun NewLoanApplicationScreen(
                 Text("Approve & Disburse Immediately", style = MaterialTheme.typography.titleSmall)
                 Text(
                   if (disburseImmediately) {
-                    "Disburses funds & generates ${frequency.displayTitle} schedule immediately"
+                    "Disburses funds & generates fixed ${frequency.displayTitle} schedule immediately"
                   } else {
-                    "Saves as 'Pending Approval' for two-stage credit review & treasury disbursement"
+                    "Saves as 'Pending Approval' preserving selected product terms"
                   },
                   style = MaterialTheme.typography.bodySmall,
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -460,50 +664,101 @@ fun NewLoanApplicationScreen(
         )
       }
 
-      // Live Quote Summary Card
-      if (liveQuote != null && principalPaise >= 10_000L && feePaise in 0L until principalPaise) {
-        val netDisbursedPayout = (liveQuote.principalPaise - liveQuote.processingFeePaise).coerceAtLeast(0L)
+      // STEPS 5, 6, 7 & 8: Auto-calculated Fixed EMI/EDI, Installment Count, Total Scheduled Repayment & Dates
+      if (selectedProduct != null && liveQuote != null) {
         Card(
           colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
           ),
-          modifier = Modifier.fillMaxWidth(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("fixed_loan_quote_card"),
         ) {
           Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
           ) {
             Text(
-              text = "${frequency.displayTitle} Repayment & Payout Preview",
+              text = "Fixed Product Repayment Terms",
               style = MaterialTheme.typography.titleMedium,
               fontWeight = FontWeight.Bold,
             )
-            QuoteRow("Sanctioned Principal", IndianFinanceFormatter.formatPaise(liveQuote.principalPaise))
-            QuoteRow("Processing Fee Deducted", "- ${IndianFinanceFormatter.formatPaise(liveQuote.processingFeePaise)}")
-            QuoteRow("Net Disbursed Payout", IndianFinanceFormatter.formatPaise(netDisbursedPayout))
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            QuoteRow("Fixed Margin", IndianFinanceFormatter.formatPaise(liveQuote.totalMarginPaise))
-            QuoteRow("Total Payable", IndianFinanceFormatter.formatPaise(liveQuote.totalScheduledRepaymentPaise))
-            QuoteRow(
-              "Fixed Installment (${frequency.shortLabel})",
-              "${IndianFinanceFormatter.formatPaise(liveQuote.fixedInstallmentPaise)} × ${liveQuote.totalInstallments}",
+            Text(
+              text = "${selectedProduct.name} • ${selectedProduct.productCode}",
+              style = MaterialTheme.typography.labelMedium.copy(fontFamily = MonoFontFamily),
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            QuoteRow("First Installment Due", liveQuote.repaymentStartDateDdMmYyyy)
-            QuoteRow("Maturity Date", liveQuote.expectedCompletionDateDdMmYyyy)
+            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+            QuoteRow(
+              label = "Loan Amount",
+              value = IndianFinanceFormatter.formatPaise(liveQuote.principalPaise),
+            )
+            if (liveQuote.processingFeePaise > 0L) {
+              QuoteRow(
+                label = "Processing Fee Deducted",
+                value = "- ${IndianFinanceFormatter.formatPaise(liveQuote.processingFeePaise)}",
+              )
+              QuoteRow(
+                label = "Net Disbursed Payout",
+                value = IndianFinanceFormatter.formatPaise(liveQuote.netDisbursedPaise),
+              )
+            }
+            QuoteRow(
+              label = "5. Fixed ${frequency.shortLabel} Amount",
+              value = IndianFinanceFormatter.formatPaise(liveQuote.fixedInstallmentPaise),
+              valueTestTag = "loan_fixed_installment_display",
+            )
+            QuoteRow(
+              label = "6. Number of Installments",
+              value = "${liveQuote.totalInstallments} (${selectedProduct.durationLabel})",
+              valueTestTag = "loan_installment_count_display",
+            )
+            Surface(
+              color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+              shape = MaterialTheme.shapes.small,
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Column(
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+              ) {
+                Text(
+                  text = "7. Total Scheduled Repayment (Fixed ${frequency.shortLabel} × Installments)",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                  text = "${IndianFinanceFormatter.formatPaise(liveQuote.fixedInstallmentPaise)} × ${liveQuote.totalInstallments} = ${IndianFinanceFormatter.formatPaise(liveQuote.totalScheduledRepaymentPaise)}",
+                  style = MaterialTheme.typography.titleMedium.copy(fontFamily = MonoFontFamily),
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.testTag("loan_total_repayment_display"),
+                )
+              }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+            QuoteRow(
+              label = "8. Repayment Start Date",
+              value = liveQuote.repaymentStartDateDdMmYyyy,
+              valueTestTag = "loan_repayment_start_date_display",
+            )
+            QuoteRow(
+              label = "Expected Completion Date",
+              value = liveQuote.expectedCompletionDateDdMmYyyy,
+              valueTestTag = "loan_expected_completion_date_display",
+            )
           }
         }
       }
 
+      // STEP 9: Save selected product and its fixed repayment terms to the loan record
       Button(
         onClick = {
+          val prod = selectedProduct ?: return@Button
           onSubmitLoan(
             selectedCustomerId,
-            productType,
-            principalPaise,
-            fixedInstallmentPaise,
-            feePaise,
-            frequency,
-            tenureInt,
+            prod.id,
             disbursementDate,
             selectedAgentId,
             disburseImmediately,
@@ -511,7 +766,7 @@ fun NewLoanApplicationScreen(
             disbursementReference.trim(),
           )
         },
-        enabled = selectedCustomerId.isNotBlank() && validationError == null && !isSaving,
+        enabled = selectedCustomerId.isNotBlank() && selectedProduct != null && validationError == null && !isSaving,
         modifier = Modifier
           .fillMaxWidth()
           .height(52.dp)
@@ -519,8 +774,8 @@ fun NewLoanApplicationScreen(
       ) {
         Text(
           when {
-            isSaving -> "Saving Loan…"
-            canApprove && disburseImmediately -> "Approve, Disburse & Generate Schedule"
+            isSaving -> "Saving Fixed-Term Loan…"
+            canApprove && disburseImmediately -> "Approve, Disburse & Generate Fixed Schedule"
             else -> "Submit Loan Application"
           },
         )
@@ -530,7 +785,11 @@ fun NewLoanApplicationScreen(
 }
 
 @Composable
-private fun QuoteRow(label: String, value: String) {
+private fun QuoteRow(
+  label: String,
+  value: String,
+  valueTestTag: String? = null,
+) {
   Row(
     horizontalArrangement = Arrangement.SpaceBetween,
     modifier = Modifier.fillMaxWidth(),
@@ -540,6 +799,7 @@ private fun QuoteRow(label: String, value: String) {
       value,
       style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFontFamily),
       fontWeight = FontWeight.Bold,
+      modifier = if (valueTestTag != null) Modifier.testTag(valueTestTag) else Modifier,
     )
   }
 }

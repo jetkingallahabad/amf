@@ -9,6 +9,7 @@ import com.example.data.local.EmployeeEntity
 import com.example.data.local.EmployeeInviteEntity
 import com.example.data.local.InstallmentScheduleEntity
 import com.example.data.local.LoanEntity
+import com.example.data.local.LoanProductEntity
 import com.example.data.local.PaymentAdjustmentEntity
 import com.example.data.local.PaymentEntity
 import com.example.data.local.PreClosureRequestEntity
@@ -41,6 +42,8 @@ data class FirestoreOrgConfig(
   val headOfficeBranchId: String = "",
   val headOfficeBranchName: String = "",
   val initialized: Boolean = false,
+  val ledgerEpochVersion: Int = 0,
+  @ServerTimestamp val ledgerStartedAt: Timestamp? = null,
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 )
@@ -340,6 +343,50 @@ data class FirestoreCustomerDocument(
 }
 
 @IgnoreExtraProperties
+data class FirestoreLoanProduct(
+  @DocumentId val id: String = "",
+  val orgOwnerUid: String = "",
+  val productCode: String = "",
+  val name: String = "",
+  val principalPaise: Long = 0L,
+  val repaymentFrequency: String = "DAILY",
+  val durationCount: Int = 1,
+  val totalInstallments: Int = 1,
+  val fixedInstallmentPaise: Long = 0L,
+  val totalPayablePaise: Long = 0L,
+  val processingFeePaise: Long = 0L,
+  val isActive: Boolean = true,
+  val createdByUid: String = "",
+  val createdDateDdMmYyyy: String = "",
+  val updatedDateDdMmYyyy: String = "",
+  val createdAtMillis: Long = 0L,
+  val updatedAtMillis: Long = 0L,
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+) {
+  fun toEntity(): LoanProductEntity = LoanProductEntity(
+    id = id,
+    orgOwnerUid = orgOwnerUid,
+    productCode = productCode,
+    name = name,
+    principalPaise = principalPaise,
+    repaymentFrequency = runCatching { RepaymentFrequency.valueOf(repaymentFrequency) }
+      .getOrDefault(RepaymentFrequency.DAILY),
+    durationCount = durationCount,
+    totalInstallments = totalInstallments,
+    fixedInstallmentPaise = fixedInstallmentPaise,
+    totalPayablePaise = totalPayablePaise,
+    processingFeePaise = processingFeePaise,
+    isActive = isActive,
+    createdByEmployeeId = createdByUid,
+    createdDateDdMmYyyy = createdDateDdMmYyyy,
+    updatedDateDdMmYyyy = updatedDateDdMmYyyy,
+    createdAtMillis = createdAtMillis,
+    updatedAtMillis = updatedAtMillis,
+  )
+}
+
+@IgnoreExtraProperties
 data class FirestoreLoan(
   @DocumentId val id: String = "",
   val orgOwnerUid: String = "",
@@ -365,6 +412,9 @@ data class FirestoreLoan(
   val branchName: String = "",
   val teamId: String = "",
   val assignedAgentName: String = "",
+  val loanProductId: String = "",
+  val loanProductCode: String = "",
+  val loanProductName: String = "",
   val productType: String = "DAILY_BUSINESS_EDI",
   val principalPaise: Long = 0L,
   val annualInterestRateBps: Int = 0,
@@ -400,6 +450,9 @@ data class FirestoreLoan(
     teamId = teamId.ifBlank { null },
     assignedAgentId = assignedAgentUid,
     assignedAgentName = assignedAgentName,
+    loanProductId = loanProductId,
+    loanProductCode = loanProductCode,
+    loanProductName = loanProductName,
     productType = runCatching { LoanProductType.valueOf(productType) }.getOrDefault(LoanProductType.DAILY_BUSINESS_EDI),
     principalPaise = principalPaise,
     annualInterestRateBps = annualInterestRateBps,
@@ -776,6 +829,8 @@ object FirestorePayloads {
     "headOfficeBranchId" to headOfficeBranchId,
     "headOfficeBranchName" to headOfficeBranchName,
     "initialized" to true,
+    "ledgerEpochVersion" to 1,
+    "ledgerStartedAt" to FieldValue.serverTimestamp(),
     "createdAt" to FieldValue.serverTimestamp(),
     "updatedAt" to FieldValue.serverTimestamp(),
   )
@@ -925,6 +980,27 @@ object FirestorePayloads {
     "updatedAt" to FieldValue.serverTimestamp(),
   )
 
+  fun loanProductCreate(product: LoanProductEntity): Map<String, Any> = mapOf(
+    "orgOwnerUid" to product.orgOwnerUid,
+    "productCode" to product.productCode,
+    "name" to product.name.take(120),
+    "principalPaise" to product.principalPaise,
+    "repaymentFrequency" to product.repaymentFrequency.name,
+    "durationCount" to product.durationCount,
+    "totalInstallments" to product.totalInstallments,
+    "fixedInstallmentPaise" to product.fixedInstallmentPaise,
+    "totalPayablePaise" to product.totalPayablePaise,
+    "processingFeePaise" to product.processingFeePaise,
+    "isActive" to product.isActive,
+    "createdByUid" to product.createdByEmployeeId,
+    "createdDateDdMmYyyy" to product.createdDateDdMmYyyy,
+    "updatedDateDdMmYyyy" to product.updatedDateDdMmYyyy,
+    "createdAtMillis" to product.createdAtMillis,
+    "updatedAtMillis" to product.updatedAtMillis,
+    "createdAt" to FieldValue.serverTimestamp(),
+    "updatedAt" to FieldValue.serverTimestamp(),
+  )
+
   fun loanCreate(loan: LoanEntity): Map<String, Any> = mapOf(
     "orgOwnerUid" to loan.orgOwnerUid,
     "branchManagerUids" to loan.branchManagerUidsList(),
@@ -949,6 +1025,9 @@ object FirestorePayloads {
     "branchName" to loan.branchName,
     "teamId" to (loan.teamId ?: ""),
     "assignedAgentName" to loan.assignedAgentName,
+    "loanProductId" to loan.loanProductId,
+    "loanProductCode" to loan.loanProductCode,
+    "loanProductName" to loan.loanProductName.take(120),
     "productType" to loan.productType.name,
     "principalPaise" to loan.principalPaise,
     "annualInterestRateBps" to loan.annualInterestRateBps,

@@ -186,16 +186,31 @@ class ExampleRobolectricTest {
     assertEquals(1, mgrVisible.size)
     assertEquals(puneCustomer.id, mgrVisible.first().id)
 
+    val dailyProduct = loanRepo.createLoanProduct(
+      actor = owner,
+      name = "₹20,000 • 30 Days • ₹750 EDI",
+      principalPaise = 2_000_000L,
+      repaymentFrequency = RepaymentFrequency.DAILY,
+      durationCount = 30,
+      fixedInstallmentPaise = 75_000L,
+    ).getOrThrow()
+
+    // Branch Manager cannot configure fixed loan products
+    val mgrProductAttempt = loanRepo.createLoanProduct(
+      actor = manager,
+      name = "Unauthorized Product",
+      principalPaise = 1_000_000L,
+      repaymentFrequency = RepaymentFrequency.WEEKLY,
+      durationCount = 12,
+      fixedInstallmentPaise = 100_000L,
+    )
+    assertTrue(mgrProductAttempt.exceptionOrNull() is SecurityException)
+
     // Pune Manager cannot create loan on Mumbai customer
     val crossBranchLoanAttempt = loanRepo.createLoanApplication(
       actor = manager,
       customerId = mumbaiCustomer.id,
-      productType = LoanProductType.DAILY_BUSINESS_EDI,
-      principalPaise = 2_000_000L,
-      annualInterestRatePercent = 18.0,
-      processingFeePaise = 0L,
-      repaymentFrequency = RepaymentFrequency.DAILY,
-      totalInstallments = 30,
+      loanProductId = dailyProduct.id,
       disbursementDateDdMmYyyy = "26-10-2026",
       assignedAgentId = agent.id,
       disburseImmediately = true,
@@ -231,15 +246,19 @@ class ExampleRobolectricTest {
       assignedAgentId = owner.id,
     ).getOrThrow()
 
+    val product10Day = loanRepo.createLoanProduct(
+      actor = owner,
+      name = "₹10,000 • 10 Days • ₹1,000 EDI",
+      principalPaise = 1_000_000L,
+      repaymentFrequency = RepaymentFrequency.DAILY,
+      durationCount = 10,
+      fixedInstallmentPaise = 100_000L,
+    ).getOrThrow()
+
     val loan = loanRepo.createLoanApplication(
       actor = owner,
       customerId = customer.id,
-      productType = LoanProductType.DAILY_BUSINESS_EDI,
-      principalPaise = 1_000_000L,
-      annualInterestRatePercent = 0.0,
-      processingFeePaise = 0L,
-      repaymentFrequency = RepaymentFrequency.DAILY,
-      totalInstallments = 10,
+      loanProductId = product10Day.id,
       disbursementDateDdMmYyyy = "10-10-2026",
       assignedAgentId = owner.id,
       disburseImmediately = true,
@@ -349,16 +368,20 @@ class ExampleRobolectricTest {
         assignedAgentId = owner.id,
       ).getOrThrow()
 
+      val product4Day = loanRepo.createLoanProduct(
+        actor = owner,
+        name = "₹4,000 • 4 Days • ₹1,000 EDI",
+        principalPaise = 400_000L,
+        repaymentFrequency = RepaymentFrequency.DAILY,
+        durationCount = 4,
+        fixedInstallmentPaise = 100_000L,
+      ).getOrThrow()
+
       // 4 Daily installments of ₹1,000 each = ₹4,000 (400_000 paise)
       val loan = loanRepo.createLoanApplication(
         actor = owner,
         customerId = customer.id,
-        productType = LoanProductType.DAILY_BUSINESS_EDI,
-        principalPaise = 400_000L,
-        annualInterestRatePercent = 0.0,
-        processingFeePaise = 0L,
-        repaymentFrequency = RepaymentFrequency.DAILY,
-        totalInstallments = 4,
+        loanProductId = product4Day.id,
         disbursementDateDdMmYyyy = "10-10-2026",
         assignedAgentId = owner.id,
         disburseImmediately = true,
@@ -498,4 +521,148 @@ class ExampleRobolectricTest {
       assertEquals(InstallmentStatus.UPCOMING, schedFinal[2].status)
       assertEquals(0L, schedFinal[2].paidAmountPaise)
     }
+
+  @Test
+  fun ownerOnlyFixedLoanProducts_andExistingLoanImmutabilityWhenProductModifiedOrDeactivated_verified() = runBlocking {
+    val owner = authRepo.initializeOwnerAccount(
+      ownerFullName = "Meera Krishnan",
+      mobile = "9840123456",
+      email = "meera@finance.in",
+      orgName = "Krishnan Finance",
+      headOfficeBranchName = "Chennai HO",
+      headOfficeCity = "Chennai",
+      headOfficeAddress = "T Nagar",
+    ).getOrThrow()
+
+    val customer = loanRepo.registerCustomer(
+      actor = owner,
+      fullName = "Bala Provision Store",
+      guardianName = "Sundar",
+      mobile = "9840987654",
+      alternateMobile = "",
+      address = "Usman Road",
+      city = "Chennai",
+      kycDocumentType = "Aadhaar Card",
+      kycDocumentNumber = "555566667777",
+      occupation = "Provision Store",
+      monthlyIncomePaise = 4_000_000L,
+      branchId = owner.branchId,
+      assignedAgentId = owner.id,
+    ).getOrThrow()
+
+    // Configure exact two products from business specification:
+    // Product A: ₹10,000 • 12 weeks • Fixed Weekly EMI ₹1,000 -> Total ₹12,000
+    val prod12Wk = loanRepo.createLoanProduct(
+      actor = owner,
+      name = "₹10,000 • 12 Weeks • ₹1,000 EMI",
+      principalPaise = 10_000_00L,
+      repaymentFrequency = RepaymentFrequency.WEEKLY,
+      durationCount = 12,
+      fixedInstallmentPaise = 1_000_00L,
+    ).getOrThrow()
+    assertEquals(12_000_00L, prod12Wk.totalPayablePaise)
+
+    // Product B: ₹10,000 • 15 weeks • Fixed Weekly EMI ₹800 -> Total ₹12,000
+    val prod15Wk = loanRepo.createLoanProduct(
+      actor = owner,
+      name = "₹10,000 • 15 Weeks • ₹800 EMI",
+      principalPaise = 10_000_00L,
+      repaymentFrequency = RepaymentFrequency.WEEKLY,
+      durationCount = 15,
+      fixedInstallmentPaise = 800_00L,
+    ).getOrThrow()
+    assertEquals(12_000_00L, prod15Wk.totalPayablePaise)
+
+    // Submit PENDING_APPROVAL loan on 12-week product (₹1,000 EMI × 12 = ₹12,000)
+    val pendingLoan12 = loanRepo.createLoanApplication(
+      actor = owner,
+      customerId = customer.id,
+      loanProductId = prod12Wk.id,
+      disbursementDateDdMmYyyy = "01-10-2026",
+      assignedAgentId = owner.id,
+      disburseImmediately = false,
+    ).getOrThrow()
+    assertEquals(LoanStatus.PENDING_APPROVAL, pendingLoan12.status)
+    assertEquals(0, pendingLoan12.annualInterestRateBps)
+    assertEquals(1_000_00L, pendingLoan12.installmentAmountPaise)
+    assertEquals(12, pendingLoan12.totalInstallments)
+    assertEquals(12_000_00L, pendingLoan12.totalPayablePaise)
+    assertEquals(prod12Wk.id, pendingLoan12.loanProductId)
+
+    // Create & disburse ACTIVE loan on 15-week product (₹800 EMI × 15 = ₹12,000)
+    val activeLoan15 = loanRepo.createLoanApplication(
+      actor = owner,
+      customerId = customer.id,
+      loanProductId = prod15Wk.id,
+      disbursementDateDdMmYyyy = "01-10-2026",
+      assignedAgentId = owner.id,
+      disburseImmediately = true,
+    ).getOrThrow()
+    assertEquals(15, loanRepo.observeLoanSchedule(activeLoan15.id).first().size)
+    assertEquals(800_00L, activeLoan15.installmentAmountPaise)
+    assertEquals(12_000_00L, activeLoan15.totalPayablePaise)
+
+    // Owner later edits prod12Wk to ₹1,100 EMI (Total ₹13,200) AND deactivates it
+    loanRepo.updateLoanProduct(
+      actor = owner,
+      productId = prod12Wk.id,
+      name = "₹10,000 • 12 Weeks • ₹1,100 EMI",
+      principalPaise = 10_000_00L,
+      repaymentFrequency = RepaymentFrequency.WEEKLY,
+      durationCount = 12,
+      fixedInstallmentPaise = 1_100_00L,
+      isActive = false,
+    ).getOrThrow()
+
+    // New loan on deactivated product MUST be rejected
+    val newLoanOnDeactivated = loanRepo.createLoanApplication(
+      actor = owner,
+      customerId = customer.id,
+      loanProductId = prod12Wk.id,
+      disbursementDateDdMmYyyy = "02-10-2026",
+      assignedAgentId = owner.id,
+      disburseImmediately = false,
+    )
+    assertTrue(newLoanOnDeactivated.isFailure)
+
+    // Existing pendingLoan12 MUST preserve original ₹1,000 × 12 = ₹12,000 even when disbursed AFTER product change!
+    val disbursedLoan12 = loanRepo.disburseLoan(
+      actor = owner,
+      loanId = pendingLoan12.id,
+      disbursementDateDdMmYyyy = "02-10-2026",
+      disbursementMode = PaymentMode.CASH,
+    ).getOrThrow()
+    assertEquals(1_000_00L, disbursedLoan12.installmentAmountPaise)
+    assertEquals(12_000_00L, disbursedLoan12.totalPayablePaise)
+    val schedule12 = loanRepo.observeLoanSchedule(disbursedLoan12.id).first()
+    assertEquals(12, schedule12.size)
+    assertTrue(schedule12.all { it.scheduledAmountPaise == 1_000_00L })
+  }
+
+  @Test
+  fun loanFinanceViewModel_initializesCleanlyWithOnlineConnectivityObserver_noNullPointerException() = runBlocking {
+    val owner = authRepo.initializeOwnerAccount(
+      ownerFullName = "Arvind Nair",
+      mobile = "9847011223",
+      email = "arvind@nairfinance.in",
+      orgName = "Nair Finance",
+      headOfficeBranchName = "Kochi HO",
+      headOfficeCity = "Kochi",
+      headOfficeAddress = "MG Road",
+    ).getOrThrow()
+
+    val onlineObserver = object : com.example.util.ConnectivityObserver {
+      override val isOnline = kotlinx.coroutines.flow.flowOf(true)
+      override fun isCurrentlyOnline(): Boolean = true
+    }
+
+    val vm = com.example.ui.viewmodel.LoanFinanceViewModel(
+      currentActor = owner,
+      authOrgRepository = authRepo,
+      customerLoanRepository = loanRepo,
+      connectivityObserver = onlineObserver,
+    )
+    assertEquals(false, vm.isSyncing.value)
+    assertEquals(true, vm.isNetworkOnline.value)
+  }
 }

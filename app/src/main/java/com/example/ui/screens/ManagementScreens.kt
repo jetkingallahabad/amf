@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HistoryEdu
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material3.AlertDialog
@@ -85,6 +86,8 @@ import com.example.ui.theme.PendingSyncAmberContainer
 fun ManagementHubScreen(
   actor: EmployeeEntity,
   pendingSyncCount: Int,
+  activeProductCount: Int = 0,
+  onOpenLoanProducts: () -> Unit,
   onOpenEmployees: () -> Unit,
   onOpenTeams: () -> Unit,
   onOpenSyncQueue: () -> Unit,
@@ -109,6 +112,20 @@ fun ManagementHubScreen(
           (actor.email.takeIf { it.isNotBlank() }?.let { " • $it" } ?: ""),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+
+    item {
+      HubMenuCard(
+        title = "Fixed Loan Products (Daily EDI & Weekly EMI)",
+        subtitle = if (actor.role == UserRole.OWNER) {
+          "$activeProductCount active fixed scheme(s) • Add, edit, activate, or deactivate fixed EMI/EDI products"
+        } else {
+          "$activeProductCount active fixed scheme(s) • Owner-managed fixed repayment catalog"
+        },
+        icon = Icons.Default.Inventory2,
+        onClick = onOpenLoanProducts,
+        tag = "hub_loan_products_card",
       )
     }
 

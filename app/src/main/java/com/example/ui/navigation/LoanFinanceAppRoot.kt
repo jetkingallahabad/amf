@@ -78,6 +78,7 @@ import com.example.ui.screens.EmployeeManagementScreen
 import com.example.ui.screens.GlobalSchedulesScreen
 import com.example.ui.screens.GoogleSignInScreen
 import com.example.ui.screens.LoanDetailScreen
+import com.example.ui.screens.LoanProductManagementScreen
 import com.example.ui.screens.ManagementHubScreen
 import com.example.ui.screens.NewLoanApplicationScreen
 import com.example.ui.screens.OwnerSetupScreen
@@ -97,15 +98,18 @@ object AppRoutes {
   const val REPORTS = "reports"
   const val MANAGE = "manage"
 
-  const val REGISTER_CUSTOMER = "register_customer"
+  const val REGISTER_CUSTOMER = "register_customer?returnToNewLoan={returnToNewLoan}"
   const val CUSTOMER_PROFILE = "customer_profile/{customerId}"
   const val NEW_LOAN = "new_loan?customerId={customerId}"
   const val LOAN_DETAIL = "loan_detail/{loanId}"
+  const val LOAN_PRODUCTS = "loan_products"
   const val EMPLOYEES = "employees"
   const val TEAMS = "teams"
   const val SYNC_QUEUE = "sync_queue"
   const val AUDIT_LOGS = "audit_logs"
 
+  fun registerCustomer(returnToNewLoan: Boolean = false) =
+    if (returnToNewLoan) "register_customer?returnToNewLoan=true" else "register_customer"
   fun customerProfile(customerId: String) = "customer_profile/${Uri.encode(customerId)}"
   fun newLoan(customerId: String? = null) =
     if (customerId.isNullOrBlank()) "new_loan" else "new_loan?customerId=${Uri.encode(customerId)}"
@@ -286,6 +290,8 @@ private fun AuthenticatedWorkspace(
   val searchMode by financeVm.searchMode.collectAsStateWithLifecycle()
   val searchHits by financeVm.searchHits.collectAsStateWithLifecycle()
   val customers by financeVm.customers.collectAsStateWithLifecycle()
+  val allLoanProducts by financeVm.allLoanProducts.collectAsStateWithLifecycle()
+  val activeLoanProducts by financeVm.activeLoanProducts.collectAsStateWithLifecycle()
   val schedules by financeVm.schedules.collectAsStateWithLifecycle()
   val branches by financeVm.branches.collectAsStateWithLifecycle()
   val teams by financeVm.teams.collectAsStateWithLifecycle()
@@ -409,8 +415,9 @@ private fun AuthenticatedWorkspace(
                 metrics = dashboardMetrics,
                 schedules = schedules,
                 onNavigateSearch = { navigateTopLevel(AppRoutes.CUSTOMERS) },
-                onNavigateRegisterCustomer = { navController.navigate(AppRoutes.REGISTER_CUSTOMER) },
+                onNavigateRegisterCustomer = { navController.navigate(AppRoutes.registerCustomer()) },
                 onNavigateNewLoan = { navController.navigate(AppRoutes.newLoan()) },
+                onNavigateLoanProducts = { navController.navigate(AppRoutes.LOAN_PRODUCTS) },
                 onNavigateSchedules = { navigateTopLevel(AppRoutes.SCHEDULES) },
                 onNavigateLoanDetail = { id -> navController.navigate(AppRoutes.loanDetail(id)) },
                 onNavigateEmployees = { navController.navigate(AppRoutes.EMPLOYEES) },
@@ -431,7 +438,7 @@ private fun AuthenticatedWorkspace(
                 onFilterModeChange = financeVm::updateSearchMode,
                 onOpenCustomerProfile = { id -> navController.navigate(AppRoutes.customerProfile(id)) },
                 onOpenLoanDetail = { id -> navController.navigate(AppRoutes.loanDetail(id)) },
-                onRegisterCustomer = { navController.navigate(AppRoutes.REGISTER_CUSTOMER) },
+                onRegisterCustomer = { navController.navigate(AppRoutes.registerCustomer()) },
               )
             }
 
@@ -456,6 +463,8 @@ private fun AuthenticatedWorkspace(
               ManagementHubScreen(
                 actor = actor,
                 pendingSyncCount = dashboardMetrics.localPendingSyncCount,
+                activeProductCount = activeLoanProducts.size,
+                onOpenLoanProducts = { navController.navigate(AppRoutes.LOAN_PRODUCTS) },
                 onOpenEmployees = { navController.navigate(AppRoutes.EMPLOYEES) },
                 onOpenTeams = { navController.navigate(AppRoutes.TEAMS) },
                 onOpenSyncQueue = { navController.navigate(AppRoutes.SYNC_QUEUE) },
@@ -464,7 +473,16 @@ private fun AuthenticatedWorkspace(
               )
             }
 
-            composable(AppRoutes.REGISTER_CUSTOMER) {
+            composable(
+              route = AppRoutes.REGISTER_CUSTOMER,
+              arguments = listOf(
+                navArgument("returnToNewLoan") {
+                  type = NavType.BoolType
+                  defaultValue = false
+                },
+              ),
+            ) { entry ->
+              val returnToNewLoan = entry.arguments?.getBoolean("returnToNewLoan") == true
               CustomerRegistrationScreen(
                 actor = actor,
                 branches = branches,
@@ -486,9 +504,16 @@ private fun AuthenticatedWorkspace(
                     branchId = bId,
                     assignedAgentId = agId,
                     onSuccess = { newCustId ->
-                      navController.navigate(AppRoutes.customerProfile(newCustId)) {
-                        popUpTo(AppRoutes.REGISTER_CUSTOMER) { inclusive = true }
-                        launchSingleTop = true
+                      if (returnToNewLoan) {
+                        navController.navigate(AppRoutes.newLoan(newCustId)) {
+                          popUpTo(AppRoutes.NEW_LOAN) { inclusive = true }
+                          launchSingleTop = true
+                        }
+                      } else {
+                        navController.navigate(AppRoutes.customerProfile(newCustId)) {
+                          popUpTo(AppRoutes.REGISTER_CUSTOMER) { inclusive = true }
+                          launchSingleTop = true
+                        }
                       }
                     },
                   )
@@ -560,18 +585,23 @@ private fun AuthenticatedWorkspace(
                 actor = actor,
                 customers = customers,
                 employees = employees,
+                activeProducts = activeLoanProducts,
                 preselectedCustomerId = preselectedCustomerId,
                 isSaving = isSyncing,
                 onBack = ::safeNavigateBack,
-                onSubmitLoan = { custId, prod, princ, fixedInstallment, fee, freq, tenure, disbDate, agentId, disbNow, disbMode, disbRef ->
+                onRegisterNewCustomer = {
+                  navController.navigate(AppRoutes.registerCustomer(returnToNewLoan = true))
+                },
+                onOpenLoanProducts = {
+                  navController.navigate(AppRoutes.LOAN_PRODUCTS)
+                },
+                onSeedStandardProducts = {
+                  financeVm.seedStandardFixedProducts()
+                },
+                onSubmitLoan = { custId, productId, disbDate, agentId, disbNow, disbMode, disbRef ->
                   financeVm.submitLoanApplication(
                     customerId = custId,
-                    productType = prod,
-                    principalPaise = princ,
-                    fixedInstallmentPaise = fixedInstallment,
-                    processingFeePaise = fee,
-                    repaymentFrequency = freq,
-                    totalInstallments = tenure,
+                    loanProductId = productId,
                     disbursementDateDdMmYyyy = disbDate,
                     assignedAgentId = agentId,
                     disburseImmediately = disbNow,
@@ -584,6 +614,46 @@ private fun AuthenticatedWorkspace(
                       }
                     },
                   )
+                },
+              )
+            }
+
+            composable(AppRoutes.LOAN_PRODUCTS) {
+              LoanProductManagementScreen(
+                actor = actor,
+                products = allLoanProducts,
+                isSaving = isSyncing,
+                onBack = ::safeNavigateBack,
+                onCreateProduct = { name, principalPaise, freq, durationCount, fixedInstPaise, feePaise ->
+                  financeVm.createLoanProduct(
+                    name = name,
+                    principalPaise = principalPaise,
+                    repaymentFrequency = freq,
+                    durationCount = durationCount,
+                    fixedInstallmentPaise = fixedInstPaise,
+                    processingFeePaise = feePaise,
+                  )
+                },
+                onUpdateProduct = { productId, name, principalPaise, freq, durationCount, fixedInstPaise, feePaise, active ->
+                  financeVm.updateLoanProduct(
+                    productId = productId,
+                    name = name,
+                    principalPaise = principalPaise,
+                    repaymentFrequency = freq,
+                    durationCount = durationCount,
+                    fixedInstallmentPaise = fixedInstPaise,
+                    processingFeePaise = feePaise,
+                    isActive = active,
+                  )
+                },
+                onToggleProductActive = { productId, active ->
+                  financeVm.setLoanProductActiveStatus(
+                    productId = productId,
+                    isActive = active,
+                  )
+                },
+                onSeedStandardProducts = {
+                  financeVm.seedStandardFixedProducts()
                 },
               )
             }

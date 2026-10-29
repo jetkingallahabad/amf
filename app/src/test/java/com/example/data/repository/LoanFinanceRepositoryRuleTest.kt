@@ -400,15 +400,19 @@ class LoanFinanceRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assignedAgentId = owner.id,
       ).getOrThrow()
 
+      val product10Day = loanRepo.createLoanProduct(
+        actor = owner,
+        name = "₹10,000 • 10 Days • ₹1,000 EDI",
+        principalPaise = 1_000_000L,
+        repaymentFrequency = RepaymentFrequency.DAILY,
+        durationCount = 10,
+        fixedInstallmentPaise = 100_000L,
+      ).getOrThrow()
+
       val loan = loanRepo.createLoanApplication(
         actor = owner,
         customerId = customer.id,
-        productType = LoanProductType.DAILY_BUSINESS_EDI,
-        principalPaise = 1_000_000L, // ₹10,000
-        annualInterestRatePercent = 0.0,
-        processingFeePaise = 0L,
-        repaymentFrequency = RepaymentFrequency.DAILY,
-        totalInstallments = 10,
+        loanProductId = product10Day.id,
         disbursementDateDdMmYyyy = "10-10-2026",
         assignedAgentId = owner.id,
         disburseImmediately = true,
@@ -581,16 +585,42 @@ class LoanFinanceRepositoryRuleTest : FirestoreEmulatorTestBase() {
         integrity,
       )
 
+      // Configure fixed loan products as Owner
+      val daily30Product = loanRepo.createLoanProduct(
+        actor = owner,
+        name = "₹20,000 • 30 Days • ₹720 EDI",
+        principalPaise = 2_000_000L,
+        repaymentFrequency = RepaymentFrequency.DAILY,
+        durationCount = 30,
+        fixedInstallmentPaise = 72_000L,
+        processingFeePaise = 40_000L,
+      ).getOrThrow()
+
+      val weekly20Product = loanRepo.createLoanProduct(
+        actor = owner,
+        name = "₹50,000 • 20 Weeks • ₹2,800 EMI",
+        principalPaise = 5_000_000L,
+        repaymentFrequency = RepaymentFrequency.WEEKLY,
+        durationCount = 20,
+        fixedInstallmentPaise = 280_000L,
+        processingFeePaise = 50_000L,
+      ).getOrThrow()
+
+      val weekly12Product = loanRepo.createLoanProduct(
+        actor = owner,
+        name = "₹12,000 • 12 Weeks • ₹1,000 EMI",
+        principalPaise = 1_200_000L,
+        repaymentFrequency = RepaymentFrequency.WEEKLY,
+        durationCount = 12,
+        fixedInstallmentPaise = 100_000L,
+        processingFeePaise = 20_000L,
+      ).getOrThrow()
+
       // 4. Loan #1: Submit Application (PENDING_APPROVAL) -> Approve (APPROVED) -> Disburse (ACTIVE)
       val loan1Pending = loanRepo.createLoanApplication(
         actor = owner,
         customerId = customer.id,
-        productType = LoanProductType.DAILY_BUSINESS_EDI,
-        principalPaise = 2_000_000L, // ₹20,000
-        annualInterestRatePercent = 18.0,
-        processingFeePaise = 40_000L, // ₹400
-        repaymentFrequency = RepaymentFrequency.DAILY,
-        totalInstallments = 30,
+        loanProductId = daily30Product.id,
         disbursementDateDdMmYyyy = "15-10-2026",
         assignedAgentId = owner.id,
         disburseImmediately = false,
@@ -622,12 +652,7 @@ class LoanFinanceRepositoryRuleTest : FirestoreEmulatorTestBase() {
       val loan2Pending = loanRepo.createLoanApplication(
         actor = owner,
         customerId = customer.id,
-        productType = LoanProductType.EMERGENCY_BRIDGE,
-        principalPaise = 5_000_000L,
-        annualInterestRatePercent = 20.0,
-        processingFeePaise = 50_000L,
-        repaymentFrequency = RepaymentFrequency.WEEKLY,
-        totalInstallments = 20,
+        loanProductId = weekly20Product.id,
         disbursementDateDdMmYyyy = "16-10-2026",
         assignedAgentId = owner.id,
         disburseImmediately = false,
@@ -644,12 +669,7 @@ class LoanFinanceRepositoryRuleTest : FirestoreEmulatorTestBase() {
       val loan3Active = loanRepo.createLoanApplication(
         actor = owner,
         customerId = customer.id,
-        productType = LoanProductType.WEEKLY_GROUP_EMI,
-        principalPaise = 1_200_000L, // ₹12,000
-        annualInterestRatePercent = 0.0,
-        processingFeePaise = 20_000L,
-        repaymentFrequency = RepaymentFrequency.WEEKLY,
-        totalInstallments = 12,
+        loanProductId = weekly12Product.id,
         disbursementDateDdMmYyyy = "01-10-2026",
         assignedAgentId = owner.id,
         disburseImmediately = true,
@@ -816,6 +836,247 @@ class LoanFinanceRepositoryRuleTest : FirestoreEmulatorTestBase() {
       }.exceptionOrNull()
       assertPermissionDenied(unauthGetDocAttempt)
       assertEquals(0, loanRepo.observeCloudCustomerDocuments(deepak).first().size)
+    }
+
+  @Test
+  fun ownerOnlyFixedLoanProducts_nonOwnerDeniedByFirestoreRules_andHistoricalLoansPreservedAfterProductChange() =
+    runEmulatorTest(timeoutMs = 30_000L) {
+      signInTestUser("owner@products.in")
+      val owner = authRepo.initializeOwnerAccount(
+        ownerFullName = "Vikramaditya Rao",
+        mobile = "9845099887",
+        email = "owner@products.in",
+        orgName = "Rao Microfinance",
+        headOfficeBranchName = "Mysuru HO",
+        headOfficeCity = "Mysuru",
+        headOfficeAddress = "Sayyaji Rao Road",
+      ).getOrThrow()
+
+      // Owner creates 2 fixed loan products:
+      // 1) ₹10,000 • 12 Weeks • ₹1,000 EMI -> Total ₹12,000
+      val prod12Wk = loanRepo.createLoanProduct(
+        actor = owner,
+        name = "₹10,000 • 12 Weeks • ₹1,000 EMI",
+        principalPaise = 1_000_000L,
+        repaymentFrequency = RepaymentFrequency.WEEKLY,
+        durationCount = 12,
+        fixedInstallmentPaise = 100_000L,
+      ).getOrThrow()
+      // 2) ₹10,000 • 15 Weeks • ₹800 EMI -> Total ₹12,000
+      val prod15Wk = loanRepo.createLoanProduct(
+        actor = owner,
+        name = "₹10,000 • 15 Weeks • ₹800 EMI",
+        principalPaise = 1_000_000L,
+        repaymentFrequency = RepaymentFrequency.WEEKLY,
+        durationCount = 15,
+        fixedInstallmentPaise = 80_000L,
+      ).getOrThrow()
+      assertEquals(2, loanRepo.observeCloudLoanProducts(owner).first().size)
+
+      // Owner invites Branch Manager
+      authRepo.createEmployeeInvite(
+        actor = owner,
+        fullName = "Kavitha Manager",
+        mobile = "9845011229",
+        invitedEmail = "kavitha.mgr@products.in",
+        assignedRole = UserRole.BRANCH_MANAGER,
+        branchId = owner.branchId,
+        teamId = null,
+        teamName = null,
+        permissions = RolePermissionTemplate.defaultsFor(UserRole.BRANCH_MANAGER),
+      ).getOrThrow()
+
+      // Claim invite as Branch Manager
+      signInTestUser("kavitha.mgr@products.in")
+      val mgr = (authRepo.resolveAuthenticatedSession().getOrThrow() as CloudAuthResolution.Authenticated).employee
+
+      // Branch Manager can read org's active loan products from Cloud Firestore
+      val cloudProductsForMgr = loanRepo.observeCloudLoanProducts(mgr).first()
+      assertEquals(2, cloudProductsForMgr.size)
+
+      // Branch Manager bypassing client guard to create or deactivate a product MUST be denied by Firestore Security Rules!
+      val mgrCreateAttempt = loanRepo.createLoanProduct(
+        actor = mgr,
+        name = "Unauthorized Product",
+        principalPaise = 1_000_000L,
+        repaymentFrequency = RepaymentFrequency.WEEKLY,
+        durationCount = 10,
+        fixedInstallmentPaise = 120_000L,
+        bypassClientGuardForRulesTest = true,
+      )
+      assertPermissionDenied(mgrCreateAttempt.exceptionOrNull())
+
+      val mgrDeactivateAttempt = loanRepo.setLoanProductActiveStatus(
+        actor = mgr,
+        productId = prod15Wk.id,
+        isActive = false,
+        bypassClientGuardForRulesTest = true,
+      )
+      assertPermissionDenied(mgrDeactivateAttempt.exceptionOrNull())
+
+      // Branch Manager registers customer & creates PENDING_APPROVAL loan on 12-week product (₹1,000 × 12 = ₹12,000)
+      val customer = loanRepo.registerCustomer(
+        actor = mgr,
+        fullName = "Chamundi Silk House",
+        guardianName = "Nagaraj",
+        mobile = "9845033445",
+        alternateMobile = "",
+        address = "Devaraja Market",
+        city = "Mysuru",
+        kycDocumentType = "Aadhaar Card",
+        kycDocumentNumber = "444455556666",
+        occupation = "Silk Retail",
+        monthlyIncomePaise = 5_500_000L,
+        branchId = mgr.branchId,
+        assignedAgentId = mgr.id,
+      ).getOrThrow()
+
+      val loan12 = loanRepo.createLoanApplication(
+        actor = mgr,
+        customerId = customer.id,
+        loanProductId = prod12Wk.id,
+        disbursementDateDdMmYyyy = "20-10-2026",
+        assignedAgentId = mgr.id,
+        disburseImmediately = false,
+      ).getOrThrow()
+      assertEquals(1_200_000L, loan12.totalPayablePaise)
+      assertEquals(0, loan12.annualInterestRateBps)
+
+      // Switch back to Owner: edit prod12Wk to ₹1,100 EMI (₹13,200 total) AND deactivate it
+      signInTestUser("owner@products.in")
+      loanRepo.updateLoanProduct(
+        actor = owner,
+        productId = prod12Wk.id,
+        name = "₹10,000 • 12 Weeks • ₹1,100 EMI",
+        principalPaise = 1_000_000L,
+        repaymentFrequency = RepaymentFrequency.WEEKLY,
+        durationCount = 12,
+        fixedInstallmentPaise = 110_000L,
+        isActive = false,
+      ).getOrThrow()
+
+      // Switch back to Branch Manager:
+      // 1) Attempting a NEW loan on deactivated product (even bypassing client guard) MUST be denied by Firestore Security Rules!
+      signInTestUser("kavitha.mgr@products.in")
+      val newLoanDeactivatedAttempt = loanRepo.createLoanApplication(
+        actor = mgr,
+        customerId = customer.id,
+        loanProductId = prod12Wk.id,
+        disbursementDateDdMmYyyy = "21-10-2026",
+        assignedAgentId = mgr.id,
+        disburseImmediately = false,
+        bypassClientGuardForRulesTest = true,
+      )
+      assertPermissionDenied(newLoanDeactivatedAttempt.exceptionOrNull())
+
+      // 2) Existing loan12 preserves its original ₹1,000 × 12 = ₹12,000 terms in Cloud Firestore & disburses cleanly!
+      val disbursedLoan12 = loanRepo.disburseLoan(
+        actor = mgr,
+        loanId = loan12.id,
+        disbursementDateDdMmYyyy = "21-10-2026",
+        disbursementMode = PaymentMode.CASH,
+      ).getOrThrow()
+      val cloudLoan12 = loanRepo.getCloudLoanById(disbursedLoan12.id).getOrThrow()
+      assertEquals(LoanStatus.ACTIVE, cloudLoan12.status)
+      assertEquals(100_000L, cloudLoan12.installmentAmountPaise)
+      assertEquals(1_200_000L, cloudLoan12.totalPayablePaise)
+      val cloudSched12 = loanRepo.observeCloudSchedules(mgr).first().filter { it.loanId == loan12.id }
+      assertEquals(12, cloudSched12.size)
+      assertTrue(cloudSched12.all { it.scheduledAmountPaise == 100_000L })
+    }
+
+  @Test
+  fun cleanZeroLedgerEpoch_excludesPreResetCloudRecords_andStartsDashboardAtZero() =
+    runEmulatorTest(timeoutMs = 30_000L) {
+      signInTestUser("owner@cleanstart.in")
+      val owner = authRepo.initializeOwnerAccount(
+        ownerFullName = "Suresh Kumar",
+        mobile = "9840011223",
+        email = "owner@cleanstart.in",
+        orgName = "Clean Start Finance",
+        headOfficeBranchName = "Chennai HO",
+        headOfficeCity = "Chennai",
+        headOfficeAddress = "Anna Salai",
+      ).getOrThrow()
+
+      // Simulate legacy pre-v1 state in Cloud Firestore: set ledgerEpochVersion = 0 and create a legacy loan
+      firestore.collection("org_config").document("main").update(
+        mapOf(
+          "ledgerEpochVersion" to 0,
+          "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+        ),
+      ).await()
+
+      val prod = loanRepo.createLoanProduct(
+        actor = owner,
+        name = "₹10,000 • 12 Weeks • ₹1,000 EMI",
+        principalPaise = 1_000_000L,
+        repaymentFrequency = RepaymentFrequency.WEEKLY,
+        durationCount = 12,
+        fixedInstallmentPaise = 100_000L,
+      ).getOrThrow()
+
+      val legacyCust = loanRepo.registerCustomer(
+        actor = owner,
+        fullName = "Legacy Test Borrower",
+        guardianName = "Rajan",
+        mobile = "9840055667",
+        alternateMobile = "",
+        address = "Old Market",
+        city = "Chennai",
+        kycDocumentType = "Aadhaar Card",
+        kycDocumentNumber = "888877776666",
+        occupation = "Shop",
+        monthlyIncomePaise = 3_000_000L,
+        branchId = owner.branchId,
+        assignedAgentId = owner.id,
+      ).getOrThrow()
+
+      loanRepo.createLoanApplication(
+        actor = owner,
+        customerId = legacyCust.id,
+        loanProductId = prod.id,
+        disbursementDateDdMmYyyy = "01-10-2026",
+        assignedAgentId = owner.id,
+        disburseImmediately = true,
+      ).getOrThrow()
+
+      // Simulate fresh local Room DB (version 6 upgrade) + Owner resolving session on updated app
+      kotlinx.coroutines.delay(50)
+      db.clearAllTables()
+      val resolved = (authRepo.resolveAuthenticatedSession().getOrThrow() as CloudAuthResolution.Authenticated).employee
+
+      val syncJobs = loanRepo.startRealtimeLedgerSync(
+        actor = resolved,
+        scope = this,
+        onSyncComplete = {},
+        onSyncError = {},
+      )
+      kotlinx.coroutines.delay(400)
+
+      // Dashboard / Room ledger must start strictly at ZERO (0 customers, 0 loans, ₹0 outstanding, ₹0 principal)
+      assertEquals(0, db.dao().countCustomers())
+      assertEquals(0, db.dao().countLoans())
+
+      // Subsequent new customer & loan created AFTER clean start DO sync & persist normally!
+      val freshCust = loanRepo.registerCustomer(
+        actor = resolved,
+        fullName = "Fresh Borrower",
+        guardianName = "Mani",
+        mobile = "9840099881",
+        alternateMobile = "",
+        address = "New Market",
+        city = "Chennai",
+        kycDocumentType = "Aadhaar Card",
+        kycDocumentNumber = "999988887777",
+        occupation = "Trader",
+        monthlyIncomePaise = 4_000_000L,
+        branchId = resolved.branchId,
+        assignedAgentId = resolved.id,
+      ).getOrThrow()
+      assertEquals(freshCust.id, db.dao().getCustomerById(freshCust.id)?.id)
+
+      syncJobs.forEach { it.cancel() }
     }
 }
 

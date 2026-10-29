@@ -17,6 +17,7 @@ import com.example.data.local.EmployeeEntity
 import com.example.data.local.EmployeeInviteEntity
 import com.example.data.local.InstallmentScheduleEntity
 import com.example.data.local.LoanEntity
+import com.example.data.local.LoanProductEntity
 import com.example.data.local.PaymentAdjustmentEntity
 import com.example.data.local.PaymentEntity
 import com.example.data.local.PreClosureRequestEntity
@@ -135,11 +136,6 @@ class LoanFinanceViewModel(
 
   private var syncJobs: List<Job> = emptyList()
 
-  init {
-    startCloudListeners()
-    observeConnectivityForAutoSync()
-  }
-
   private fun observeConnectivityForAutoSync() {
     val observer = connectivityObserver ?: return
     viewModelScope.launch {
@@ -214,6 +210,12 @@ class LoanFinanceViewModel(
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
   val loans: StateFlow<List<LoanEntity>> = customerLoanRepository.observePermittedLoans(currentActor)
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
+
+  val allLoanProducts: StateFlow<List<LoanProductEntity>> = customerLoanRepository.observeAllLoanProducts()
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
+
+  val activeLoanProducts: StateFlow<List<LoanProductEntity>> = customerLoanRepository.observeActiveLoanProducts()
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
   val schedules: StateFlow<List<InstallmentScheduleEntity>> = customerLoanRepository.observePermittedSchedules(currentActor)
@@ -325,11 +327,14 @@ class LoanFinanceViewModel(
     val localPendingPayments = activePayments.filter { it.syncStatus != SyncStatus.SERVER_CONFIRMED }
 
     val branchRows = loanList.groupBy { it.branchName }.map { (branchName, bLoans) ->
+      val branchActiveLoans = bLoans.filter {
+        it.status == LoanStatus.ACTIVE || it.status == LoanStatus.PRE_CLOSURE_REQUESTED
+      }
       val branchPaid = activePayments.filter { it.branchName == branchName }.sumOf { it.amountPaise }
       BranchPerformanceRow(
         branchName = branchName,
-        activeLoans = bLoans.count { it.status == LoanStatus.ACTIVE || it.status == LoanStatus.PRE_CLOSURE_REQUESTED },
-        outstandingPaise = bLoans.sumOf { it.outstandingPaise },
+        activeLoans = branchActiveLoans.size,
+        outstandingPaise = branchActiveLoans.sumOf { it.outstandingPaise },
         collectedPaise = branchPaid,
       )
     }
@@ -428,6 +433,11 @@ class LoanFinanceViewModel(
 
   private val _isSyncing = MutableStateFlow(false)
   val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+  init {
+    startCloudListeners()
+    observeConnectivityForAutoSync()
+  }
 
   fun consumeFeedback() {
     _feedbackMessage.value = null
@@ -646,14 +656,153 @@ class LoanFinanceViewModel(
     }
   }
 
+  fun createLoanProduct(
+    name: String,
+    principalPaise: Long,
+    repaymentFrequency: RepaymentFrequency,
+    durationCount: Int,
+    fixedInstallmentPaise: Long,
+    processingFeePaise: Long = 0L,
+    onDone: () -> Unit = {},
+  ) {
+    _isSyncing.value = true
+    viewModelScope.launch {
+      val result = customerLoanRepository.createLoanProduct(
+        actor = currentActor,
+        name = name,
+        principalPaise = principalPaise,
+        repaymentFrequency = repaymentFrequency,
+        durationCount = durationCount,
+        fixedInstallmentPaise = fixedInstallmentPaise,
+        processingFeePaise = processingFeePaise,
+      )
+      _isSyncing.value = false
+      result.onSuccess { product ->
+        _feedbackMessage.value = "Configured fixed product ${product.productCode} (${product.name})"
+        onDone()
+      }.onFailure { err ->
+        _feedbackMessage.value = toUserFriendlyFirestoreMessage(err, "Failed to configure fixed loan product.")
+      }
+    }
+  }
+
+  fun updateLoanProduct(
+    productId: String,
+    name: String,
+    principalPaise: Long,
+    repaymentFrequency: RepaymentFrequency,
+    durationCount: Int,
+    fixedInstallmentPaise: Long,
+    processingFeePaise: Long = 0L,
+    isActive: Boolean = true,
+    onDone: () -> Unit = {},
+  ) {
+    _isSyncing.value = true
+    viewModelScope.launch {
+      val result = customerLoanRepository.updateLoanProduct(
+        actor = currentActor,
+        productId = productId,
+        name = name,
+        principalPaise = principalPaise,
+        repaymentFrequency = repaymentFrequency,
+        durationCount = durationCount,
+        fixedInstallmentPaise = fixedInstallmentPaise,
+        processingFeePaise = processingFeePaise,
+        isActive = isActive,
+      )
+      _isSyncing.value = false
+      result.onSuccess { product ->
+        _feedbackMessage.value = "Updated product ${product.productCode}. Existing loans keep their original terms."
+        onDone()
+      }.onFailure { err ->
+        _feedbackMessage.value = toUserFriendlyFirestoreMessage(err, "Failed to update fixed loan product.")
+      }
+    }
+  }
+
+  fun setLoanProductActiveStatus(
+    productId: String,
+    isActive: Boolean,
+    onDone: () -> Unit = {},
+  ) {
+    _isSyncing.value = true
+    viewModelScope.launch {
+      val result = customerLoanRepository.setLoanProductActiveStatus(
+        actor = currentActor,
+        productId = productId,
+        isActive = isActive,
+      )
+      _isSyncing.value = false
+      result.onSuccess { product ->
+        _feedbackMessage.value = "${if (product.isActive) "Activated" else "Deactivated"} ${product.name}. Existing loans remain unchanged."
+        onDone()
+      }.onFailure { err ->
+        _feedbackMessage.value = toUserFriendlyFirestoreMessage(err, "Failed to update product status.")
+      }
+    }
+  }
+
+  fun seedStandardFixedProducts(onDone: () -> Unit = {}) {
+    if (currentActor.role != UserRole.OWNER) {
+      _feedbackMessage.value = "Only the Organization Owner can configure fixed loan products."
+      return
+    }
+    data class StandardPreset(
+      val name: String,
+      val principalPaise: Long,
+      val frequency: RepaymentFrequency,
+      val durationCount: Int,
+      val fixedInstallmentPaise: Long,
+    )
+    val presets = listOf(
+      StandardPreset("₹10,000 • 12 Weeks • ₹1,000 EMI", 1_000_000L, RepaymentFrequency.WEEKLY, 12, 100_000L),
+      StandardPreset("₹10,000 • 15 Weeks • ₹800 EMI", 1_000_000L, RepaymentFrequency.WEEKLY, 15, 80_000L),
+      StandardPreset("₹10,000 • 100 Days • ₹120 EDI", 1_000_000L, RepaymentFrequency.DAILY, 100, 12_000L),
+      StandardPreset("₹25,000 • 20 Weeks • ₹1,500 EMI", 2_500_000L, RepaymentFrequency.WEEKLY, 20, 150_000L),
+      StandardPreset("₹25,000 • 100 Days • ₹280 EDI", 2_500_000L, RepaymentFrequency.DAILY, 100, 28_000L),
+      StandardPreset("₹50,000 • 24 Weeks • ₹2,500 EMI", 5_000_000L, RepaymentFrequency.WEEKLY, 24, 250_000L),
+    )
+    _isSyncing.value = true
+    viewModelScope.launch {
+      val existing = allLoanProducts.value
+      var createdCount = 0
+      var lastErr: Throwable? = null
+      for (preset in presets) {
+        val alreadyExists = existing.any {
+          it.principalPaise == preset.principalPaise &&
+            it.repaymentFrequency == preset.frequency &&
+            it.durationCount == preset.durationCount &&
+            it.fixedInstallmentPaise == preset.fixedInstallmentPaise
+        }
+        if (!alreadyExists) {
+          customerLoanRepository.createLoanProduct(
+            actor = currentActor,
+            name = preset.name,
+            principalPaise = preset.principalPaise,
+            repaymentFrequency = preset.frequency,
+            durationCount = preset.durationCount,
+            fixedInstallmentPaise = preset.fixedInstallmentPaise,
+            processingFeePaise = 0L,
+          ).onSuccess { createdCount++ }.onFailure { lastErr = it }
+        }
+      }
+      _isSyncing.value = false
+      if (lastErr != null && createdCount == 0) {
+        _feedbackMessage.value = toUserFriendlyFirestoreMessage(lastErr!!, "Failed to create standard fixed products.")
+      } else {
+        _feedbackMessage.value = if (createdCount > 0) {
+          "Added $createdCount standard fixed loan products to Cloud Firestore."
+        } else {
+          "All standard fixed loan products are already configured."
+        }
+        onDone()
+      }
+    }
+  }
+
   fun submitLoanApplication(
     customerId: String,
-    productType: LoanProductType,
-    principalPaise: Long,
-    fixedInstallmentPaise: Long,
-    processingFeePaise: Long,
-    repaymentFrequency: RepaymentFrequency,
-    totalInstallments: Int,
+    loanProductId: String,
     disbursementDateDdMmYyyy: String,
     assignedAgentId: String,
     disburseImmediately: Boolean,
@@ -666,12 +815,7 @@ class LoanFinanceViewModel(
       val result = customerLoanRepository.createLoanApplication(
         actor = currentActor,
         customerId = customerId,
-        productType = productType,
-        principalPaise = principalPaise,
-        fixedInstallmentPaise = fixedInstallmentPaise,
-        processingFeePaise = processingFeePaise,
-        repaymentFrequency = repaymentFrequency,
-        totalInstallments = totalInstallments,
+        loanProductId = loanProductId,
         disbursementDateDdMmYyyy = disbursementDateDdMmYyyy,
         assignedAgentId = assignedAgentId,
         disburseImmediately = disburseImmediately,
@@ -680,7 +824,7 @@ class LoanFinanceViewModel(
       )
       _isSyncing.value = false
       result.onSuccess { loan ->
-        _feedbackMessage.value = "Saved loan ${loan.loanCode} (${loan.status.displayTitle}) in Cloud Firestore"
+        _feedbackMessage.value = "Saved loan ${loan.loanCode} (${loan.status.displayTitle}) with fixed ${loan.repaymentFrequency.shortLabel} terms"
         onSuccess(loan.id)
       }.onFailure { err ->
         _feedbackMessage.value = toUserFriendlyFirestoreMessage(err, "Failed to save loan application.")

@@ -9,6 +9,7 @@ import com.example.data.local.EmployeeEntity
 import com.example.data.local.InstallmentScheduleEntity
 import com.example.data.local.LoanEntity
 import com.example.data.local.LoanFinanceDao
+import com.example.data.local.LoanProductEntity
 import com.example.data.local.PaymentAdjustmentEntity
 import com.example.data.local.PaymentEntity
 import com.example.data.local.PreClosureRequestEntity
@@ -22,6 +23,8 @@ import com.example.data.remote.FirestoreCustomerDocument
 import com.example.data.remote.FirestoreEmployee
 import com.example.data.remote.FirestoreInstallmentSchedule
 import com.example.data.remote.FirestoreLoan
+import com.example.data.remote.FirestoreLoanProduct
+import com.example.data.remote.FirestoreOrgConfig
 import com.example.data.remote.FirestorePayloads
 import com.example.data.remote.FirestorePayment
 import com.example.data.remote.FirestorePaymentAdjustment
@@ -29,6 +32,7 @@ import com.example.data.remote.FirestorePreClosureRequest
 import com.example.data.sync.SyncEngine
 import com.example.domain.model.CustomerKycValidator
 import com.example.domain.model.DocumentType
+import com.example.domain.model.FixedLoanProductValidator
 import com.example.domain.model.InstallmentStatus
 import com.example.domain.model.LoanProductType
 import com.example.domain.model.LoanScheduleCalculator
@@ -47,15 +51,18 @@ import com.example.util.IndianFinanceFormatter
 import com.example.util.OperationType
 import com.example.util.handleFirestoreError
 import com.example.util.toUserFriendlyFirestoreMessage
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -146,8 +153,21 @@ class CustomerLoanRepository(
   fun observeLoanAdjustments(loanId: String): Flow<List<PaymentAdjustmentEntity>> = dao.observeAdjustmentsForLoan(loanId)
   fun observeLoanAdvanceLedger(loanId: String): Flow<List<AdvanceTransactionEntity>> = dao.observeAdvanceLedger(loanId)
   fun observeLoanPreClosures(loanId: String): Flow<List<PreClosureRequestEntity>> = dao.observePreClosuresForLoan(loanId)
+  fun observeAllLoanProducts(): Flow<List<LoanProductEntity>> = dao.observeAllLoanProducts()
+  fun observeActiveLoanProducts(): Flow<List<LoanProductEntity>> = dao.observeActiveLoanProducts()
 
   // --- Direct Cloud Firestore Streams & Getters (Strictly Aligned with firestore.rules) ---
+
+  fun observeCloudLoanProducts(actor: EmployeeEntity): Flow<List<LoanProductEntity>> {
+    val fs = checkNotNull(firestore) { "Firestore not configured" }
+    val ownerUid = actor.orgOwnerUid.ifBlank { actor.id }
+    return fs.collection("loan_products")
+      .whereEqualTo("orgOwnerUid", ownerUid)
+      .snapshots()
+      .map { snap ->
+        snap.documents.mapNotNull { it.toObject(FirestoreLoanProduct::class.java)?.toEntity() }
+      }
+  }
 
   fun observeCloudCustomers(actor: EmployeeEntity): Flow<List<CustomerEntity>> {
     val fs = checkNotNull(firestore) { "Firestore not configured" }
@@ -313,9 +333,52 @@ class CustomerLoanRepository(
     }
   }
 
+  private sealed interface LedgerEpochGate {
+    data object AwaitingCleanReset : LedgerEpochGate
+    data class Active(val startedAt: Timestamp?) : LedgerEpochGate
+  }
+
+  private fun observeLedgerEpochGate(): Flow<LedgerEpochGate> {
+    val fs = firestore ?: return flowOf(LedgerEpochGate.Active(null))
+    return fs.collection("org_config").document("main")
+      .snapshots()
+      .map { snap ->
+        val cfg = snap.toObject(FirestoreOrgConfig::class.java)
+        when {
+          !snap.exists() || cfg == null -> LedgerEpochGate.Active(null)
+          cfg.ledgerEpochVersion < 1 -> LedgerEpochGate.AwaitingCleanReset
+          else -> LedgerEpochGate.Active(cfg.ledgerStartedAt)
+        }
+      }
+      .catch { emit(LedgerEpochGate.Active(null)) }
+  }
+
+  private fun isWithinActiveLedgerEpoch(docCreatedAt: Timestamp?, gate: LedgerEpochGate): Boolean =
+    when (gate) {
+      LedgerEpochGate.AwaitingCleanReset -> false
+      is LedgerEpochGate.Active -> {
+        val cutoff = gate.startedAt ?: return true
+        docCreatedAt == null || docCreatedAt >= cutoff
+      }
+    }
+
+  private fun scopedQuery(
+    fs: FirebaseFirestore,
+    collectionName: String,
+    actor: EmployeeEntity,
+    agentField: String = "assignedAgentUid",
+  ): Query {
+    val ownerUid = actor.orgOwnerUid.ifBlank { actor.id }
+    return when (actor.role) {
+      UserRole.OWNER -> fs.collection(collectionName).whereEqualTo("orgOwnerUid", ownerUid)
+      UserRole.BRANCH_MANAGER -> fs.collection(collectionName).whereArrayContains("branchManagerUids", actor.id)
+      UserRole.COLLECTION_AGENT -> fs.collection(collectionName).whereEqualTo(agentField, actor.id)
+    }
+  }
+
   /**
    * Starts lifecycle-scoped real-time mirroring of permitted Cloud Firestore financial ledgers
-   * into the local Room SQLite database for seamless multi-device sync + offline access.
+   * within the active organization ledger epoch into the local Room SQLite database.
    */
   fun startRealtimeLedgerSync(
     actor: EmployeeEntity,
@@ -323,15 +386,25 @@ class CustomerLoanRepository(
     onSyncComplete: () -> Unit,
     onSyncError: (String) -> Unit,
   ): List<Job> {
-    if (firestore == null || firebaseAuth?.currentUser == null) {
+    val fs = firestore
+    if (fs == null || firebaseAuth?.currentUser == null) {
       onSyncComplete()
       return emptyList()
     }
+    val epochGateFlow = observeLedgerEpochGate()
     val jobs = mutableListOf<Job>()
 
     jobs += scope.launch(Dispatchers.IO) {
       var firstDelivered = false
-      observeCloudCustomers(actor)
+      combine(
+        scopedQuery(fs, "customers", actor).snapshots(),
+        epochGateFlow,
+      ) { snap, gate ->
+        snap.documents
+          .filter { isWithinActiveLedgerEpoch(it.getTimestamp("createdAt"), gate) }
+          .mapNotNull { it.toObject(FirestoreCustomer::class.java)?.toEntity() }
+          .sortedByDescending { it.createdAtMillis }
+      }
         .catch { e ->
           if (e is Exception) handleFirestoreError(e, OperationType.LIST, "customers")
           onSyncError(toUserFriendlyFirestoreMessage(e))
@@ -341,7 +414,7 @@ class CustomerLoanRepository(
           }
         }
         .collect { list ->
-          dao.upsertCustomers(list)
+          if (list.isNotEmpty()) dao.upsertCustomers(list)
           if (!firstDelivered) {
             firstDelivered = true
             onSyncComplete()
@@ -350,7 +423,26 @@ class CustomerLoanRepository(
     }
 
     jobs += scope.launch(Dispatchers.IO) {
-      observeCloudLoans(actor)
+      observeCloudLoanProducts(actor)
+        .catch { e ->
+          if (e is Exception) handleFirestoreError(e, OperationType.LIST, "loan_products")
+          onSyncError(toUserFriendlyFirestoreMessage(e))
+        }
+        .collect { list ->
+          if (list.isNotEmpty()) dao.upsertLoanProducts(list)
+        }
+    }
+
+    jobs += scope.launch(Dispatchers.IO) {
+      combine(
+        scopedQuery(fs, "loans", actor).snapshots(),
+        epochGateFlow,
+      ) { snap, gate ->
+        snap.documents
+          .filter { isWithinActiveLedgerEpoch(it.getTimestamp("createdAt"), gate) }
+          .mapNotNull { it.toObject(FirestoreLoan::class.java)?.toEntity() }
+          .sortedByDescending { it.createdAtMillis }
+      }
         .catch { e ->
           if (e is Exception) handleFirestoreError(e, OperationType.LIST, "loans")
           onSyncError(toUserFriendlyFirestoreMessage(e))
@@ -363,7 +455,15 @@ class CustomerLoanRepository(
     }
 
     jobs += scope.launch(Dispatchers.IO) {
-      observeCloudSchedules(actor)
+      combine(
+        scopedQuery(fs, "installment_schedules", actor).snapshots(),
+        epochGateFlow,
+      ) { snap, gate ->
+        snap.documents
+          .filter { isWithinActiveLedgerEpoch(it.getTimestamp("createdAt"), gate) }
+          .mapNotNull { it.toObject(FirestoreInstallmentSchedule::class.java)?.toEntity() }
+          .sortedWith(compareBy({ it.dueDateEpochMillis }, { it.installmentNumber }))
+      }
         .catch { e ->
           if (e is Exception) handleFirestoreError(e, OperationType.LIST, "installment_schedules")
           onSyncError(toUserFriendlyFirestoreMessage(e))
@@ -376,40 +476,88 @@ class CustomerLoanRepository(
     }
 
     jobs += scope.launch(Dispatchers.IO) {
-      observeCloudPayments(actor)
+      combine(
+        scopedQuery(fs, "payments", actor).snapshots(),
+        epochGateFlow,
+      ) { snap, gate ->
+        snap.documents
+          .filter { isWithinActiveLedgerEpoch(it.getTimestamp("createdAt"), gate) }
+          .mapNotNull { it.toObject(FirestorePayment::class.java)?.toEntity() }
+          .sortedByDescending { it.collectedAtMillis }
+      }
         .catch { e ->
           if (e is Exception) handleFirestoreError(e, OperationType.LIST, "payments")
           onSyncError(toUserFriendlyFirestoreMessage(e))
         }
-        .collect { list -> dao.upsertPayments(list) }
+        .collect { list ->
+          if (list.isNotEmpty()) dao.upsertPayments(list)
+        }
     }
 
     jobs += scope.launch(Dispatchers.IO) {
-      observeCloudPaymentAdjustments(actor)
+      combine(
+        scopedQuery(fs, "payment_adjustments", actor).snapshots(),
+        epochGateFlow,
+      ) { snap, gate ->
+        snap.documents
+          .filter { isWithinActiveLedgerEpoch(it.getTimestamp("createdAt"), gate) }
+          .mapNotNull { it.toObject(FirestorePaymentAdjustment::class.java)?.toEntity() }
+          .sortedByDescending { it.createdAtMillis }
+      }
         .catch { e ->
           if (e is Exception) handleFirestoreError(e, OperationType.LIST, "payment_adjustments")
         }
-        .collect { list -> dao.upsertPaymentAdjustments(list) }
+        .collect { list ->
+          if (list.isNotEmpty()) dao.upsertPaymentAdjustments(list)
+        }
     }
 
     jobs += scope.launch(Dispatchers.IO) {
-      observeCloudCustomerDocuments(actor)
+      combine(
+        scopedQuery(fs, "customer_documents", actor).snapshots(),
+        epochGateFlow,
+      ) { snap, gate ->
+        snap.documents
+          .filter { isWithinActiveLedgerEpoch(it.getTimestamp("createdAt"), gate) }
+          .mapNotNull { it.toObject(FirestoreCustomerDocument::class.java)?.toEntity() }
+          .sortedByDescending { it.createdAtMillis }
+      }
         .catch { e ->
           if (e is Exception) handleFirestoreError(e, OperationType.LIST, "customer_documents")
         }
-        .collect { list -> dao.upsertCustomerDocuments(list) }
+        .collect { list ->
+          if (list.isNotEmpty()) dao.upsertCustomerDocuments(list)
+        }
     }
 
     jobs += scope.launch(Dispatchers.IO) {
-      observeCloudAdvanceTransactions(actor)
+      combine(
+        scopedQuery(fs, "advance_transactions", actor).snapshots(),
+        epochGateFlow,
+      ) { snap, gate ->
+        snap.documents
+          .filter { isWithinActiveLedgerEpoch(it.getTimestamp("createdAt"), gate) }
+          .mapNotNull { it.toObject(FirestoreAdvanceTransaction::class.java)?.toEntity() }
+          .sortedByDescending { it.createdAtMillis }
+      }
         .catch { e ->
           if (e is Exception) handleFirestoreError(e, OperationType.LIST, "advance_transactions")
         }
-        .collect { list -> dao.upsertAdvanceTransactions(list) }
+        .collect { list ->
+          if (list.isNotEmpty()) dao.upsertAdvanceTransactions(list)
+        }
     }
 
     jobs += scope.launch(Dispatchers.IO) {
-      observeCloudPreClosures(actor)
+      combine(
+        scopedQuery(fs, "preclosure_requests", actor).snapshots(),
+        epochGateFlow,
+      ) { snap, gate ->
+        snap.documents
+          .filter { isWithinActiveLedgerEpoch(it.getTimestamp("createdAt"), gate) }
+          .mapNotNull { it.toObject(FirestorePreClosureRequest::class.java)?.toEntity() }
+          .sortedByDescending { it.createdAtMillis }
+      }
         .catch { e ->
           if (e is Exception) handleFirestoreError(e, OperationType.LIST, "preclosure_requests")
           onSyncError(toUserFriendlyFirestoreMessage(e))
@@ -423,11 +571,21 @@ class CustomerLoanRepository(
 
     if (actor.role == UserRole.OWNER || actor.canViewAuditLogs) {
       jobs += scope.launch(Dispatchers.IO) {
-        observeCloudAuditLogs(actor)
+        combine(
+          scopedQuery(fs, "audit_logs", actor, agentField = "actorUid").snapshots(),
+          epochGateFlow,
+        ) { snap, gate ->
+          snap.documents
+            .filter { isWithinActiveLedgerEpoch(it.getTimestamp("createdAt"), gate) }
+            .mapNotNull { it.toObject(FirestoreAuditLog::class.java)?.toEntity() }
+            .sortedByDescending { it.createdAtMillis }
+        }
           .catch { e ->
             if (e is Exception) handleFirestoreError(e, OperationType.LIST, "audit_logs")
           }
-          .collect { list -> dao.upsertAuditLogs(list) }
+          .collect { list ->
+            if (list.isNotEmpty()) dao.upsertAuditLogs(list)
+          }
       }
     }
 
@@ -490,6 +648,19 @@ class CustomerLoanRepository(
       seq++
     }
     return "LN-${System.currentTimeMillis().toString().takeLast(6)}-${UUID.randomUUID().toString().take(4).uppercase(Locale.US)}"
+  }
+
+  private suspend fun generateUniqueProductCode(): String {
+    var seq = dao.countLoanProducts() + 1
+    repeat(8) {
+      val suffix = UUID.randomUUID().toString().replace("-", "").take(4).uppercase(Locale.US)
+      val candidate = "PRD-%04d-%s".format(Locale.US, seq, suffix)
+      if (dao.getLoanProductByCode(candidate) == null) {
+        return candidate
+      }
+      seq++
+    }
+    return "PRD-${System.currentTimeMillis().toString().takeLast(6)}-${UUID.randomUUID().toString().take(4).uppercase(Locale.US)}"
   }
 
   private suspend fun generateUniqueTransactionId(dateDdMmYyyy: String): String {
@@ -825,16 +996,273 @@ class CustomerLoanRepository(
     }
   }
 
-  // --- 6, 7, 8. New Loan Application, Approval/Rejection & Disbursement Workflow ---
+  // --- 5B. Owner-Only Fixed Loan Product Configuration (Add, Edit, Activate, Deactivate) ---
+
+  suspend fun createLoanProduct(
+    actor: EmployeeEntity,
+    name: String = "",
+    principalPaise: Long,
+    repaymentFrequency: RepaymentFrequency,
+    durationCount: Int,
+    fixedInstallmentPaise: Long,
+    processingFeePaise: Long = 0L,
+    bypassClientGuardForRulesTest: Boolean = false,
+  ): Result<LoanProductEntity> = withContext(Dispatchers.IO) {
+    runCatching {
+      if (!bypassClientGuardForRulesTest && actor.role != UserRole.OWNER) {
+        throw SecurityException("Only the Organization Owner can configure fixed loan products.")
+      }
+      val validated = FixedLoanProductValidator.validate(
+        rawName = name,
+        principalPaise = principalPaise,
+        repaymentFrequency = repaymentFrequency,
+        durationCount = durationCount,
+        fixedInstallmentPaise = fixedInstallmentPaise,
+        processingFeePaise = processingFeePaise,
+      )
+
+      val totalPayablePaise = validated.totalScheduledRepaymentPaise
+      val cleanName = validated.name
+
+      val now = System.currentTimeMillis()
+      val today = IndianFinanceFormatter.todayDdMmYyyy(now)
+      val ownerUid = actor.orgOwnerUid.ifBlank { actor.id }
+      val productCode = generateUniqueProductCode()
+
+      val product = LoanProductEntity(
+        id = UUID.randomUUID().toString(),
+        orgOwnerUid = ownerUid,
+        productCode = productCode,
+        name = cleanName,
+        principalPaise = principalPaise,
+        repaymentFrequency = repaymentFrequency,
+        durationCount = durationCount,
+        totalInstallments = durationCount,
+        fixedInstallmentPaise = fixedInstallmentPaise,
+        totalPayablePaise = totalPayablePaise,
+        processingFeePaise = processingFeePaise,
+        isActive = true,
+        createdByEmployeeId = actor.id,
+        createdDateDdMmYyyy = today,
+        updatedDateDdMmYyyy = today,
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+
+      val audit = AuditLogEntity(
+        id = UUID.randomUUID().toString(),
+        orgOwnerUid = ownerUid,
+        branchManagerUidsCsv = "",
+        actorEmployeeId = actor.id,
+        actorName = actor.fullName,
+        actorRole = actor.role,
+        branchId = actor.branchId,
+        category = "LOAN_PRODUCT",
+        action = "LOAN_PRODUCT_CREATED",
+        targetType = "LOAN_PRODUCT",
+        targetId = product.productCode,
+        summary = "Configured fixed product ${product.productCode} ($cleanName): Loan ${IndianFinanceFormatter.formatPaise(principalPaise)}, ${product.durationLabel}, Fixed ${repaymentFrequency.shortLabel} ${IndianFinanceFormatter.formatPaise(fixedInstallmentPaise)}, Total ${IndianFinanceFormatter.formatPaise(totalPayablePaise)}",
+        timestampDdMmYyyyHhMm = IndianFinanceFormatter.formatDateTimeSeconds(now),
+        createdAtMillis = now,
+      )
+
+      val fs = firestore
+      if (fs != null) {
+        try {
+          val batch = fs.batch()
+          batch.set(
+            fs.collection("loan_products").document(product.id),
+            FirestorePayloads.loanProductCreate(product),
+          )
+          batch.set(
+            fs.collection("audit_logs").document(audit.id),
+            FirestorePayloads.auditLogCreate(audit),
+          )
+          batch.commit().await()
+        } catch (e: Exception) {
+          handleFirestoreError(e, OperationType.CREATE, "loan_products/${product.id}")
+          throw e
+        }
+      }
+
+      dao.commitLoanProductMutation(product, audit)
+      product
+    }
+  }
+
+  suspend fun updateLoanProduct(
+    actor: EmployeeEntity,
+    productId: String,
+    name: String = "",
+    principalPaise: Long,
+    repaymentFrequency: RepaymentFrequency,
+    durationCount: Int,
+    fixedInstallmentPaise: Long,
+    processingFeePaise: Long = 0L,
+    isActive: Boolean = true,
+    bypassClientGuardForRulesTest: Boolean = false,
+  ): Result<LoanProductEntity> = withContext(Dispatchers.IO) {
+    runCatching {
+      if (!bypassClientGuardForRulesTest && actor.role != UserRole.OWNER) {
+        throw SecurityException("Only the Organization Owner can edit fixed loan products.")
+      }
+      val existing = resolveLoanProduct(productId)
+        ?: throw IllegalArgumentException("Fixed loan product not found.")
+
+      val validated = FixedLoanProductValidator.validate(
+        rawName = name,
+        principalPaise = principalPaise,
+        repaymentFrequency = repaymentFrequency,
+        durationCount = durationCount,
+        fixedInstallmentPaise = fixedInstallmentPaise,
+        processingFeePaise = processingFeePaise,
+      )
+
+      val totalPayablePaise = validated.totalScheduledRepaymentPaise
+      val cleanName = validated.name
+
+      val now = System.currentTimeMillis()
+      val today = IndianFinanceFormatter.todayDdMmYyyy(now)
+      val updated = existing.copy(
+        name = cleanName,
+        principalPaise = principalPaise,
+        repaymentFrequency = repaymentFrequency,
+        durationCount = durationCount,
+        totalInstallments = durationCount,
+        fixedInstallmentPaise = fixedInstallmentPaise,
+        totalPayablePaise = totalPayablePaise,
+        processingFeePaise = processingFeePaise,
+        isActive = isActive,
+        updatedDateDdMmYyyy = today,
+        updatedAtMillis = now,
+      )
+
+      val audit = AuditLogEntity(
+        id = UUID.randomUUID().toString(),
+        orgOwnerUid = existing.orgOwnerUid.ifBlank { actor.orgOwnerUid.ifBlank { actor.id } },
+        branchManagerUidsCsv = "",
+        actorEmployeeId = actor.id,
+        actorName = actor.fullName,
+        actorRole = actor.role,
+        branchId = actor.branchId,
+        category = "LOAN_PRODUCT",
+        action = "LOAN_PRODUCT_UPDATED",
+        targetType = "LOAN_PRODUCT",
+        targetId = updated.productCode,
+        summary = "Updated fixed product ${updated.productCode} ($cleanName): Loan ${IndianFinanceFormatter.formatPaise(principalPaise)}, ${updated.durationLabel}, Fixed ${repaymentFrequency.shortLabel} ${IndianFinanceFormatter.formatPaise(fixedInstallmentPaise)}, Total ${IndianFinanceFormatter.formatPaise(totalPayablePaise)} [${if (isActive) "ACTIVE" else "INACTIVE"}]. Existing loans remain unchanged.",
+        timestampDdMmYyyyHhMm = IndianFinanceFormatter.formatDateTimeSeconds(now),
+        createdAtMillis = now,
+      )
+
+      val fs = firestore
+      if (fs != null) {
+        try {
+          val batch = fs.batch()
+          batch.update(
+            fs.collection("loan_products").document(updated.id),
+            mapOf(
+              "name" to updated.name,
+              "principalPaise" to updated.principalPaise,
+              "repaymentFrequency" to updated.repaymentFrequency.name,
+              "durationCount" to updated.durationCount,
+              "totalInstallments" to updated.totalInstallments,
+              "fixedInstallmentPaise" to updated.fixedInstallmentPaise,
+              "totalPayablePaise" to updated.totalPayablePaise,
+              "processingFeePaise" to updated.processingFeePaise,
+              "isActive" to updated.isActive,
+              "updatedDateDdMmYyyy" to updated.updatedDateDdMmYyyy,
+              "updatedAtMillis" to updated.updatedAtMillis,
+              "updatedAt" to FieldValue.serverTimestamp(),
+            ),
+          )
+          batch.set(
+            fs.collection("audit_logs").document(audit.id),
+            FirestorePayloads.auditLogCreate(audit),
+          )
+          batch.commit().await()
+        } catch (e: Exception) {
+          handleFirestoreError(e, OperationType.UPDATE, "loan_products/${updated.id}")
+          throw e
+        }
+      }
+
+      dao.commitLoanProductMutation(updated, audit)
+      updated
+    }
+  }
+
+  suspend fun setLoanProductActiveStatus(
+    actor: EmployeeEntity,
+    productId: String,
+    isActive: Boolean,
+    bypassClientGuardForRulesTest: Boolean = false,
+  ): Result<LoanProductEntity> = withContext(Dispatchers.IO) {
+    runCatching {
+      if (!bypassClientGuardForRulesTest && actor.role != UserRole.OWNER) {
+        throw SecurityException("Only the Organization Owner can activate or deactivate fixed loan products.")
+      }
+      val existing = resolveLoanProduct(productId)
+        ?: throw IllegalArgumentException("Fixed loan product not found.")
+
+      val now = System.currentTimeMillis()
+      val today = IndianFinanceFormatter.todayDdMmYyyy(now)
+      val updated = existing.copy(
+        isActive = isActive,
+        updatedDateDdMmYyyy = today,
+        updatedAtMillis = now,
+      )
+
+      val audit = AuditLogEntity(
+        id = UUID.randomUUID().toString(),
+        orgOwnerUid = existing.orgOwnerUid.ifBlank { actor.orgOwnerUid.ifBlank { actor.id } },
+        branchManagerUidsCsv = "",
+        actorEmployeeId = actor.id,
+        actorName = actor.fullName,
+        actorRole = actor.role,
+        branchId = actor.branchId,
+        category = "LOAN_PRODUCT",
+        action = if (isActive) "LOAN_PRODUCT_ACTIVATED" else "LOAN_PRODUCT_DEACTIVATED",
+        targetType = "LOAN_PRODUCT",
+        targetId = updated.productCode,
+        summary = "${if (isActive) "Activated" else "Deactivated"} fixed loan product ${updated.productCode} (${updated.name}). Existing loans remain unchanged.",
+        timestampDdMmYyyyHhMm = IndianFinanceFormatter.formatDateTimeSeconds(now),
+        createdAtMillis = now,
+      )
+
+      val fs = firestore
+      if (fs != null) {
+        try {
+          val batch = fs.batch()
+          batch.update(
+            fs.collection("loan_products").document(updated.id),
+            mapOf(
+              "isActive" to updated.isActive,
+              "updatedDateDdMmYyyy" to updated.updatedDateDdMmYyyy,
+              "updatedAtMillis" to updated.updatedAtMillis,
+              "updatedAt" to FieldValue.serverTimestamp(),
+            ),
+          )
+          batch.set(
+            fs.collection("audit_logs").document(audit.id),
+            FirestorePayloads.auditLogCreate(audit),
+          )
+          batch.commit().await()
+        } catch (e: Exception) {
+          handleFirestoreError(e, OperationType.UPDATE, "loan_products/${updated.id}")
+          throw e
+        }
+      }
+
+      dao.commitLoanProductMutation(updated, audit)
+      updated
+    }
+  }
+
+  // --- 6, 7, 8. New Loan Application (Fixed Product Terms Only — Zero Percentage Interest), Approval & Disbursement ---
   suspend fun createLoanApplication(
     actor: EmployeeEntity,
     customerId: String,
-    productType: LoanProductType,
-    principalPaise: Long,
-    fixedInstallmentPaise: Long,
-    processingFeePaise: Long,
-    repaymentFrequency: RepaymentFrequency,
-    totalInstallments: Int,
+    loanProductId: String,
     disbursementDateDdMmYyyy: String,
     assignedAgentId: String,
     disburseImmediately: Boolean,
@@ -851,27 +1279,29 @@ class CustomerLoanRepository(
         assertCanAccessCustomer(actor, customer)
       }
 
-      require(principalPaise in 10_000L..500_000_000L) {
-        "Principal amount must be between ₹100 and ₹50,00,000."
-      }
-      require(fixedInstallmentPaise > 0L) {
-        "Fixed EMI/EDI amount must be greater than ₹0."
-      }
-      require(processingFeePaise in 0L until principalPaise) {
-        "Processing fee must be non-negative and less than the principal amount."
-      }
-      require(totalInstallments in 1..1000) {
-        "Total installments must be between 1 and 1,000."
+      val product = resolveLoanProduct(loanProductId)
+        ?: throw IllegalArgumentException("Select a valid configured loan product.")
+      if (!bypassClientGuardForRulesTest && !product.isActive) {
+        throw IllegalArgumentException("Selected loan product (${product.name}) is deactivated and cannot be used for new loans.")
       }
 
+      FixedLoanProductValidator.validate(
+        rawName = product.name,
+        principalPaise = product.principalPaise,
+        repaymentFrequency = product.repaymentFrequency,
+        durationCount = product.durationCount,
+        fixedInstallmentPaise = product.fixedInstallmentPaise,
+        processingFeePaise = product.processingFeePaise,
+      )
+
       val quote = LoanScheduleCalculator.calculateFixedProductQuote(
-        principalPaise = principalPaise,
-        fixedInstallmentPaise = fixedInstallmentPaise,
-        processingFeePaise = processingFeePaise,
-        totalInstallments = totalInstallments,
-        frequency = repaymentFrequency,
+        principalPaise = product.principalPaise,
+        fixedInstallmentPaise = product.fixedInstallmentPaise,
+        totalInstallments = product.totalInstallments,
+        frequency = product.repaymentFrequency,
         disbursementDateDdMmYyyy = disbursementDateDdMmYyyy,
-      ) ?: throw IllegalArgumentException("Invalid fixed EMI/EDI, total repayment, or date format (must be DD-MM-YYYY).")
+        processingFeePaise = product.processingFeePaise,
+      ) ?: throw IllegalArgumentException("Invalid disbursement date format (must be DD-MM-YYYY) or invalid product terms.")
 
       val effectiveDisbMode = if (disbursementMode == PaymentMode.ADVANCE_ADJUSTMENT) PaymentMode.CASH else disbursementMode
       val canApproveNow = disburseImmediately && (bypassClientGuardForRulesTest || actor.role == UserRole.OWNER || actor.canApproveLoan)
@@ -889,8 +1319,9 @@ class CustomerLoanRepository(
       val now = System.currentTimeMillis()
       val today = IndianFinanceFormatter.todayDdMmYyyy(now)
       val ownerUid = customer.orgOwnerUid.ifBlank { actor.orgOwnerUid.ifBlank { actor.id } }
-      val netDisbursed = if (canApproveNow) (quote.principalPaise - quote.processingFeePaise).coerceAtLeast(0L) else 0L
+      val netDisbursed = if (canApproveNow) quote.netDisbursedPaise else 0L
 
+      // Snapshot the selected product and its fixed repayment terms onto the Loan record permanently
       val loan = LoanEntity(
         id = loanId,
         orgOwnerUid = ownerUid,
@@ -905,14 +1336,17 @@ class CustomerLoanRepository(
         teamId = agent.teamId,
         assignedAgentId = agent.id,
         assignedAgentName = agent.fullName,
-        productType = productType,
+        loanProductId = product.id,
+        loanProductCode = product.productCode,
+        loanProductName = product.name,
+        productType = LoanProductType.forFrequency(product.repaymentFrequency),
         principalPaise = quote.principalPaise,
         annualInterestRateBps = 0,
         processingFeePaise = quote.processingFeePaise,
         totalInterestPaise = quote.totalMarginPaise,
         totalPayablePaise = quote.totalScheduledRepaymentPaise,
         installmentAmountPaise = quote.fixedInstallmentPaise,
-        repaymentFrequency = repaymentFrequency,
+        repaymentFrequency = product.repaymentFrequency,
         totalInstallments = quote.totalInstallments,
         paidAmountPaise = 0L,
         advanceBalancePaise = 0L,
@@ -937,7 +1371,7 @@ class CustomerLoanRepository(
       )
 
       val schedules = if (canApproveNow) {
-        buildInstallmentEntities(loan, quote)
+        buildInstallmentEntities(loan)
       } else {
         emptyList()
       }
@@ -954,7 +1388,7 @@ class CustomerLoanRepository(
         action = if (canApproveNow) "LOAN_CREATED_AND_DISBURSED" else "LOAN_APPLICATION_SUBMITTED",
         targetType = "LOAN",
         targetId = loan.loanCode,
-        summary = "${if (canApproveNow) "Disbursed" else "Submitted application for"} ${repaymentFrequency.displayTitle} loan ${loan.loanCode} for ${customer.fullName}: Principal ${IndianFinanceFormatter.formatPaise(principalPaise)}, Total Payable ${IndianFinanceFormatter.formatPaise(quote.totalScheduledRepaymentPaise)} (${quote.totalInstallments} installments)",
+        summary = "${if (canApproveNow) "Disbursed" else "Submitted application for"} fixed-product loan ${loan.loanCode} [${product.productCode} • ${product.name}] for ${customer.fullName}: Loan ${IndianFinanceFormatter.formatPaise(quote.principalPaise)}, ${quote.totalInstallments} × ${IndianFinanceFormatter.formatPaise(quote.fixedInstallmentPaise)} = Total ${IndianFinanceFormatter.formatPaise(quote.totalScheduledRepaymentPaise)}",
         timestampDdMmYyyyHhMm = IndianFinanceFormatter.formatDateTimeSeconds(now),
         createdAtMillis = now,
       )
@@ -962,7 +1396,7 @@ class CustomerLoanRepository(
       val fs = firestore
       if (fs != null) {
         try {
-          // Batch 1: Loan + Audit Log (~460 CEL); Schedule creates in chunks of 3 (~630 CEL each)
+          // Batch 1: Loan + Audit Log (~510 CEL); Schedule creates in chunks of 2 (~420 CEL each)
           val batch = fs.batch()
           batch.set(fs.collection("loans").document(loan.id), FirestorePayloads.loanCreate(loan))
           batch.set(fs.collection("audit_logs").document(audit.id), FirestorePayloads.auditLogCreate(audit))
@@ -1171,14 +1605,16 @@ class CustomerLoanRepository(
         }
       }
 
-      val quote = LoanScheduleCalculator.calculateFixedProductQuote(
-        principalPaise = loan.principalPaise,
-        fixedInstallmentPaise = loan.installmentAmountPaise,
-        processingFeePaise = loan.processingFeePaise,
-        totalInstallments = loan.totalInstallments,
-        frequency = loan.repaymentFrequency,
-        disbursementDateDdMmYyyy = disbursementDateDdMmYyyy,
-      ) ?: throw IllegalArgumentException("Enter a valid fixed EMI/EDI and disbursement date in DD-MM-YYYY format.")
+      val cleanDisbDate = disbursementDateDdMmYyyy.trim()
+      IndianFinanceFormatter.parseDdMmYyyyToMillis(cleanDisbDate)
+        ?: throw IllegalArgumentException("Enter a valid disbursement date in DD-MM-YYYY format.")
+
+      // Use ONLY the snapshotted fixed repayment terms stored on the loan record — never re-read LoanProductEntity!
+      val (firstDueStr, _) = IndianFinanceFormatter.addDays(cleanDisbDate, loan.repaymentFrequency.stepDays)
+      val (maturityStr, _) = IndianFinanceFormatter.addDays(
+        cleanDisbDate,
+        loan.totalInstallments * loan.repaymentFrequency.stepDays,
+      )
 
       val now = System.currentTimeMillis()
       val today = IndianFinanceFormatter.todayDdMmYyyy(now)
@@ -1195,14 +1631,14 @@ class CustomerLoanRepository(
         approvedDateDdMmYyyy = effectiveApprovedDate,
         approvalRemarks = effectiveRemarks,
         disbursedByEmployeeId = actor.id,
-        disbursementDateDdMmYyyy = disbursementDateDdMmYyyy.trim(),
+        disbursementDateDdMmYyyy = cleanDisbDate,
         disbursementMode = effectiveMode,
         disbursementReference = cleanRef,
         netDisbursedPaise = netDisbursed,
-        firstDueDateDdMmYyyy = quote.repaymentStartDateDdMmYyyy,
-        maturityDateDdMmYyyy = quote.expectedCompletionDateDdMmYyyy,
+        firstDueDateDdMmYyyy = firstDueStr,
+        maturityDateDdMmYyyy = maturityStr,
       )
-      val schedules = buildInstallmentEntities(updatedLoan, quote)
+      val schedules = buildInstallmentEntities(updatedLoan)
       val audit = AuditLogEntity(
         id = UUID.randomUUID().toString(),
         orgOwnerUid = loan.orgOwnerUid.ifBlank { actor.orgOwnerUid.ifBlank { actor.id } },
@@ -1215,7 +1651,7 @@ class CustomerLoanRepository(
         action = "LOAN_DISBURSED",
         targetType = "LOAN",
         targetId = loan.loanCode,
-        summary = "Disbursed loan ${loan.loanCode} (${IndianFinanceFormatter.formatPaise(netDisbursed)} net via ${effectiveMode.displayTitle}) on ${updatedLoan.disbursementDateDdMmYyyy} with ${schedules.size} ${loan.repaymentFrequency.shortLabel} installments",
+        summary = "Disbursed loan ${loan.loanCode} (${IndianFinanceFormatter.formatPaise(netDisbursed)} net via ${effectiveMode.displayTitle}) on ${updatedLoan.disbursementDateDdMmYyyy} with ${schedules.size} fixed ${loan.repaymentFrequency.shortLabel} installments of ${IndianFinanceFormatter.formatPaise(loan.installmentAmountPaise)}",
         timestampDdMmYyyyHhMm = IndianFinanceFormatter.formatDateTimeSeconds(now),
         createdAtMillis = now,
       )
@@ -1223,7 +1659,7 @@ class CustomerLoanRepository(
       val fs = firestore
       if (fs != null) {
         try {
-          // Batch 1: Loan Disbursement Update + Audit Log (~520 CEL); Schedule creates in chunks of 3 (~630 CEL each)
+          // Batch 1: Loan Disbursement Update + Audit Log (~520 CEL); Schedule creates in chunks of 2 (~420 CEL each)
           val batch = fs.batch()
           batch.update(
             fs.collection("loans").document(updatedLoan.id),
@@ -1280,14 +1716,19 @@ class CustomerLoanRepository(
 
   private fun buildInstallmentEntities(
     loan: LoanEntity,
-    quote: LoanScheduleCalculator.FixedLoanQuote,
   ): List<InstallmentScheduleEntity> {
-    return (1..quote.totalInstallments).map { num ->
+    val priorInstallmentsTotal = loan.installmentAmountPaise * (loan.totalInstallments - 1).coerceAtLeast(0)
+    val lastInstallmentPaise = (loan.totalPayablePaise - priorInstallmentsTotal).coerceAtLeast(1L)
+    return (1..loan.totalInstallments).map { num ->
       val (dueStr, dueMillis) = IndianFinanceFormatter.addDays(
         loan.disbursementDateDdMmYyyy,
-        num * quote.frequency.stepDays,
+        num * loan.repaymentFrequency.stepDays,
       )
-      val amt = quote.fixedInstallmentPaise
+      val amt = if (num == loan.totalInstallments) {
+        lastInstallmentPaise
+      } else {
+        loan.installmentAmountPaise
+      }
       InstallmentScheduleEntity(
         id = UUID.randomUUID().toString(),
         orgOwnerUid = loan.orgOwnerUid,
@@ -1303,7 +1744,7 @@ class CustomerLoanRepository(
         installmentNumber = num,
         dueDateDdMmYyyy = dueStr,
         dueDateEpochMillis = dueMillis,
-        frequency = quote.frequency,
+        frequency = loan.repaymentFrequency,
         scheduledAmountPaise = amt,
         paidAmountPaise = 0L,
         status = InstallmentStatus.UPCOMING,
@@ -2912,6 +3353,19 @@ class CustomerLoanRepository(
       snap.toObject(FirestoreLoan::class.java)?.toEntity()?.also { dao.insertLoan(it) }
     } catch (e: Exception) {
       handleFirestoreError(e, OperationType.GET, "loans/$loanId")
+      null
+    }
+  }
+
+  private suspend fun resolveLoanProduct(productId: String): LoanProductEntity? {
+    if (productId.isBlank()) return null
+    dao.getLoanProductById(productId)?.let { return it }
+    val fs = firestore ?: return null
+    return try {
+      val snap = fs.collection("loan_products").document(productId).get().await()
+      snap.toObject(FirestoreLoanProduct::class.java)?.toEntity()?.also { dao.insertLoanProduct(it) }
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.GET, "loan_products/$productId")
       null
     }
   }
