@@ -831,7 +831,7 @@ class CustomerLoanRepository(
     customerId: String,
     productType: LoanProductType,
     principalPaise: Long,
-    annualInterestRatePercent: Double,
+    fixedInstallmentPaise: Long,
     processingFeePaise: Long,
     repaymentFrequency: RepaymentFrequency,
     totalInstallments: Int,
@@ -854,8 +854,8 @@ class CustomerLoanRepository(
       require(principalPaise in 10_000L..500_000_000L) {
         "Principal amount must be between ₹100 and ₹50,00,000."
       }
-      require(annualInterestRatePercent in 0.0..60.0) {
-        "Annual interest rate must be between 0% and 60%."
+      require(fixedInstallmentPaise > 0L) {
+        "Fixed EMI/EDI amount must be greater than ₹0."
       }
       require(processingFeePaise in 0L until principalPaise) {
         "Processing fee must be non-negative and less than the principal amount."
@@ -864,14 +864,14 @@ class CustomerLoanRepository(
         "Total installments must be between 1 and 1,000."
       }
 
-      val quote = LoanScheduleCalculator.calculateQuote(
+      val quote = LoanScheduleCalculator.calculateFixedProductQuote(
         principalPaise = principalPaise,
-        annualRatePercent = annualInterestRatePercent,
+        fixedInstallmentPaise = fixedInstallmentPaise,
         processingFeePaise = processingFeePaise,
         totalInstallments = totalInstallments,
         frequency = repaymentFrequency,
         disbursementDateDdMmYyyy = disbursementDateDdMmYyyy,
-      ) ?: throw IllegalArgumentException("Invalid loan parameters or date format (must be DD-MM-YYYY).")
+      ) ?: throw IllegalArgumentException("Invalid fixed EMI/EDI, total repayment, or date format (must be DD-MM-YYYY).")
 
       val effectiveDisbMode = if (disbursementMode == PaymentMode.ADVANCE_ADJUSTMENT) PaymentMode.CASH else disbursementMode
       val canApproveNow = disburseImmediately && (bypassClientGuardForRulesTest || actor.role == UserRole.OWNER || actor.canApproveLoan)
@@ -907,11 +907,11 @@ class CustomerLoanRepository(
         assignedAgentName = agent.fullName,
         productType = productType,
         principalPaise = quote.principalPaise,
-        annualInterestRateBps = quote.annualInterestRateBps,
+        annualInterestRateBps = 0,
         processingFeePaise = quote.processingFeePaise,
-        totalInterestPaise = quote.totalInterestPaise,
-        totalPayablePaise = quote.totalPayablePaise,
-        installmentAmountPaise = quote.installmentAmountPaise,
+        totalInterestPaise = quote.totalMarginPaise,
+        totalPayablePaise = quote.totalScheduledRepaymentPaise,
+        installmentAmountPaise = quote.fixedInstallmentPaise,
         repaymentFrequency = repaymentFrequency,
         totalInstallments = quote.totalInstallments,
         paidAmountPaise = 0L,
@@ -925,8 +925,8 @@ class CustomerLoanRepository(
         disbursementMode = effectiveDisbMode,
         disbursementReference = if (canApproveNow) disbursementReference.trim() else "",
         netDisbursedPaise = netDisbursed,
-        firstDueDateDdMmYyyy = quote.firstDueDateDdMmYyyy,
-        maturityDateDdMmYyyy = quote.maturityDateDdMmYyyy,
+        firstDueDateDdMmYyyy = quote.repaymentStartDateDdMmYyyy,
+        maturityDateDdMmYyyy = quote.expectedCompletionDateDdMmYyyy,
         closedDateDdMmYyyy = "",
         createdByEmployeeId = actor.id,
         approvedByEmployeeId = if (canApproveNow) actor.id else null,
@@ -1171,14 +1171,14 @@ class CustomerLoanRepository(
         }
       }
 
-      val quote = LoanScheduleCalculator.calculateQuote(
+      val quote = LoanScheduleCalculator.calculateFixedProductQuote(
         principalPaise = loan.principalPaise,
-        annualRatePercent = loan.annualInterestRateBps / 100.0,
+        fixedInstallmentPaise = loan.installmentAmountPaise,
         processingFeePaise = loan.processingFeePaise,
         totalInstallments = loan.totalInstallments,
         frequency = loan.repaymentFrequency,
         disbursementDateDdMmYyyy = disbursementDateDdMmYyyy,
-      ) ?: throw IllegalArgumentException("Enter a valid disbursement date in DD-MM-YYYY format.")
+      ) ?: throw IllegalArgumentException("Enter a valid fixed EMI/EDI and disbursement date in DD-MM-YYYY format.")
 
       val now = System.currentTimeMillis()
       val today = IndianFinanceFormatter.todayDdMmYyyy(now)
@@ -1199,8 +1199,8 @@ class CustomerLoanRepository(
         disbursementMode = effectiveMode,
         disbursementReference = cleanRef,
         netDisbursedPaise = netDisbursed,
-        firstDueDateDdMmYyyy = quote.firstDueDateDdMmYyyy,
-        maturityDateDdMmYyyy = quote.maturityDateDdMmYyyy,
+        firstDueDateDdMmYyyy = quote.repaymentStartDateDdMmYyyy,
+        maturityDateDdMmYyyy = quote.expectedCompletionDateDdMmYyyy,
       )
       val schedules = buildInstallmentEntities(updatedLoan, quote)
       val audit = AuditLogEntity(
@@ -1280,18 +1280,14 @@ class CustomerLoanRepository(
 
   private fun buildInstallmentEntities(
     loan: LoanEntity,
-    quote: LoanScheduleCalculator.LoanQuote,
+    quote: LoanScheduleCalculator.FixedLoanQuote,
   ): List<InstallmentScheduleEntity> {
     return (1..quote.totalInstallments).map { num ->
       val (dueStr, dueMillis) = IndianFinanceFormatter.addDays(
         loan.disbursementDateDdMmYyyy,
         num * quote.frequency.stepDays,
       )
-      val amt = if (num == quote.totalInstallments) {
-        quote.lastInstallmentAmountPaise
-      } else {
-        quote.installmentAmountPaise
-      }
+      val amt = quote.fixedInstallmentPaise
       InstallmentScheduleEntity(
         id = UUID.randomUUID().toString(),
         orgOwnerUid = loan.orgOwnerUid,
