@@ -916,7 +916,7 @@ class CustomerLoanRepository(
         totalInstallments = quote.totalInstallments,
         paidAmountPaise = 0L,
         advanceBalancePaise = 0L,
-        outstandingPaise = quote.totalPayablePaise,
+        outstandingPaise = quote.totalScheduledRepaymentPaise,
         status = initialStatus,
         applicationDateDdMmYyyy = today,
         approvedDateDdMmYyyy = if (canApproveNow) today else "",
