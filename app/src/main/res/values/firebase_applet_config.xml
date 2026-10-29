@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
 <resources>
-    <string name="firestore_database_id" translatable="false">ai-studio-android-loanfina-d9333033-1eb5-4e64-97d4-2bc0b96af2a6</string>
+    <string name="firestore_database_id" translatable="false">(default)</string>
 </resources>
