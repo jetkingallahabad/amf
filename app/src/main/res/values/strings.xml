@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">Loan Finance Manager</string>
-
+<string name="default_web_client_id">Y403485408540-8e22lkfkdr30hir5q1ku79piubcja42k.apps.googleusercontent.com</string>
     <!-- Navigation -->
     <string name="nav_dashboard">Dashboard</string>
     <string name="nav_customers">Search</string>
