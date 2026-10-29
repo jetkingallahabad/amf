@@ -563,12 +563,12 @@ private fun AuthenticatedWorkspace(
                 preselectedCustomerId = preselectedCustomerId,
                 isSaving = isSyncing,
                 onBack = ::safeNavigateBack,
-                onSubmitLoan = { custId, prod, princ, rate, fee, freq, tenure, disbDate, agentId, disbNow, disbMode, disbRef ->
+                onSubmitLoan = { custId, prod, princ, fixedInstallment, fee, freq, tenure, disbDate, agentId, disbNow, disbMode, disbRef ->
                   financeVm.submitLoanApplication(
                     customerId = custId,
                     productType = prod,
                     principalPaise = princ,
-                    annualInterestRatePercent = rate,
+                    fixedInstallmentPaise = fixedInstallment,
                     processingFeePaise = fee,
                     repaymentFrequency = freq,
                     totalInstallments = tenure,
